@@ -12,6 +12,8 @@
 pub mod layout;
 pub mod naming;
 pub mod scan;
+pub mod write;
 
 pub use layout::{Book, BookFile};
 pub use naming::{BookName, NameShape, ParseOptions};
+pub use write::{write_mp3_chapters, WriteOutcome};

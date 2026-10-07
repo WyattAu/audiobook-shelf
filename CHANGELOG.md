@@ -73,6 +73,52 @@ show up:
 - Without ffmpeg on `PATH` the tests **skip and say so** on stderr. A conformance test that
   quietly passes because its oracle was missing reports coverage it does not have.
 
+### Added
+
+- **`write` — chapters written back into MP3s, checked by ffmpeg.** Reading chapters was
+  only half of what a library manager does; the other half is fixing them. The write is
+  constrained by one fact that makes it dangerous: an MP3's audio starts where its ID3v2
+  tag stops, so replacing the tag with a longer one shifts every audio byte and corrupts
+  the file silently — it still *plays*, from the wrong offset.
+  `audiobook_shelf::write::write_mp3_chapters` bounds the tag by its declared size,
+  preserves the bytes after it verbatim, keeps an ID3v1 trailer at EOF, and reuses the
+  tag's padding so a second edit does not move the audio.
+
+  A CLI verb, `--write "0:00 Prologue;5:00 One"`, rebases book-relative times onto each
+  file, since a file's own `CHAP` frames are relative to that file. `--dry-run` touches
+  nothing.
+
+- **`tests/write.rs` checks the write against ffmpeg**, which is the check that matters: a
+  tag this crate writes is only correct if something that did not write it can use it.
+  ffprobe must read back the chapters written, the file must still decode to the same
+  length, and five successive edits must leave it playable. Confirmed non-vacuous by
+  reinstating the size bug below and watching three of the five fail.
+
+### Fixed
+
+All found by running the tool against a real library, which is how these show up:
+
+- **The tag's declared size included its own header**, so every reader placed the audio ten
+  bytes late and each rewrite compounded the error. The ID3v2 size field is the length
+  *excluding* the 10-byte header. Found because ffmpeg refused to decode a file this crate
+  had written; nothing in the crate's own reader objected, because it made the same mistake
+  in the same direction.
+- **Padding was written outside the declared size**, so it was invisible to the next write,
+  which appended another 512 bytes and moved the audio again. Reusable padding is the entire
+  point of padding: without it a manager rewrites a book's chapters and shifts every file in
+  the book.
+- **A chapter with no end was written with an end of zero.** `CHAP` has no way to say
+  "open-ended": the field is a plain `u32` where 0 is an end before the start. ffmpeg
+  rejects it outright — `Chapter end time 0 before start 4954` — and mutagen faithfully
+  reports `end=0`. An open-ended chapter now runs to its file's measured duration, which is
+  what it means.
+- **The CLI's rebase collapsed open-ended chapters to an end of zero** while rebasing them
+  onto their file, so the fix above was being undone on the way in. Found by the same run,
+  downstream of the other.
+- **`--write` treated the first field of a timestamp as minutes**, turning `5:00` into 300
+  seconds and putting every chapter sixty times further into the book than asked, with no
+  error to say so.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so
