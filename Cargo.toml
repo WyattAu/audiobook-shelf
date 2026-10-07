@@ -1,0 +1,28 @@
+[package]
+name = "audiobook-shelf"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Audiobook-first library manager — groups a directory tree into books by the naming conventions real players expect, orders parts by disc and track, and reports what is inconsistent"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/WyattAu/audiobook-shelf"
+keywords = ["audiobook", "library", "manager", "mp3", "m4b"]
+categories = ["command-line-utilities", "multimedia::audio"]
+publish = false
+
+[dependencies]
+audiobook-core = { version = "0.5", path = "../audiobook-core" }
+id3-core = { version = "0.2", path = "../id3-core" }
+mp4-core = { version = "0.3", path = "../mp4-core" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[package.metadata.layers]
+tier = "L3"
