@@ -119,6 +119,28 @@ All found by running the tool against a real library, which is how these show up
   seconds and putting every chapter sixty times further into the book than asked, with no
   error to say so.
 
+### Verified
+
+- **The library view is checked against ffprobe, file relationships included.** The
+  conformance harness checks the estate's readers file by file; nothing checked the claim
+  a *library* makes, which is about relationships between files — that a book assembled
+  from several files has its chapters at the offsets a player would use. `tests/
+  conformance.rs` now composes ffprobe's per-file readings the way a player does and
+  compares the scanner against it, on a corpus ffmpeg generates.
+
+  Covers five shapes: three files laid out as one book, a chapterless file in the middle
+  (which must not become one invented chapter), an M4B carrying both a Nero `chpl` box and
+  a chapter track (two mechanisms describing the same chapters, which must not be counted
+  twice), a single-file M4B, and mixed MP3/M4B in one folder.
+
+- One defect found and fixed in the process, and it is the same defect a third time:
+  ffprobe writes a **space after the colon** in its JSON, so a parser that strips for the
+  opening quote without trimming first reads a duration of zero. A composed expectation
+  built from it offsets every chapter by nothing, and the test then fails in a way that
+  looks like a scanner bug — "scanner says 20035 ms, a player would show 0 ms" — because
+  the assertion that fails is downstream of the parser. Diagnosed by asserting on the
+  oracle's own output first, which is the order that finds the real fault.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so
