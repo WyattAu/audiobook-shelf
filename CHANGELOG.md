@@ -50,6 +50,29 @@ show up:
   sequence number was being counted as evidence that something had been read out of the
   name.
 
+### Verification
+
+- **`tests/library.rs` checks the chapter arithmetic against ffprobe.** Every other test in
+  this crate pins a rule against constructed inputs, which cannot catch the part that
+  actually breaks in practice: a book's chapters live in the individual files, so chapter 7
+  of a four-file book is not at 7 seconds but at the sum of the first three files'
+  durations. ffprobe reads each file independently, so the expected position of every
+  chapter is arithmetic over ground truth rather than a number this crate chose.
+
+  Confirmed non-vacuous: removing the offset accumulation fails three of the four tests,
+  and restoring it passes them.
+
+- Two defects in the harness itself, both found by this and both worth recording because
+  each looked like a scanner bug from where it was noticed: ffprobe writes `start_time` and
+  `duration` as **quoted strings**, so a scan for the next numeric run reads the `0` out of
+  the opening quote and reports every chapter at zero; and `tags` is a **nested** object,
+  so splitting the document on `{` puts a chapter's title in the following chunk. The
+  assertions that caught them lived downstream of the parser, which is exactly how a harness
+  defect gets mistaken for a product defect.
+
+- Without ffmpeg on `PATH` the tests **skip and say so** on stderr. A conformance test that
+  quietly passes because its oracle was missing reports coverage it does not have.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so
