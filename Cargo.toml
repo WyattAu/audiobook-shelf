@@ -11,6 +11,23 @@ categories = ["command-line-utilities", "multimedia::audio"]
 publish = false
 
 [dependencies]
+# The estate is path-linked: no crate in it is published to crates.io, so a `path` is the
+# only way to resolve a sibling locally. That leaves a cold `git clone` of this repository
+# unable to build, with cargo's error — `no matching package named audiobook-core` — giving
+# no hint that the fix is to clone the neighbours.
+#
+# Cargo has no "path, else git" fallback, so the requirement is repeated here in comments
+# for anyone who clones one repo instead of the estate:
+#
+#     git clone https://github.com/WyattAu/{mp4-core,id3-core,audiobook-core,\
+#                                      audiobook-conformance,audiobook-shelf}
+#
+# into one directory. `scripts/bootstrap.sh` in engineering-standards does this.
+#
+# The versions below track the dependency branches: `id3-core` 0.2 is the CTOC-flag and
+# ID3v2.3 fixes, and `audiobook-core` 0.5 is the v2.3 behaviour change it causes. Both live
+# on `fix/id3-chapters` and `fix/id3-v23-tags` rather than `main` until those are merged,
+# so a clone against `main` will not satisfy them.
 audiobook-core = { version = "0.5", path = "../audiobook-core" }
 id3-core = { version = "0.2", path = "../id3-core" }
 mp4-core = { version = "0.3", path = "../mp4-core" }
