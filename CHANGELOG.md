@@ -301,6 +301,19 @@ All found by running the tool against a real library, which is how these show up
   ends and titles on both files. Exporting is only worth having if the file it writes is
   one ffmpeg accepts.
 
+### Fixed
+
+- **`stts` claimed chapters squared samples.** Each entry in the rebuilt chapter track
+  carried the *chapter count* as its sample count, so a book with N chapters claimed N
+  entries covering N samples each: N² samples, from a track whose `stsz` held only N.
+  ffprobe resolved it by truncating at the `stsz` count, so the chapters looked right and
+  the defect was invisible \u{2014} the same shape as the `stsd` prefix loss, where the
+  reader's tolerance hides the writer's arithmetic.
+
+  Caught by writing four chapters into a three-chapter file and checking the boundaries
+  rather than the count: all four landed exactly, which is only possible because ffprobe
+  truncates. A stricter player would have refused the track.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

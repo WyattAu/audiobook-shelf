@@ -281,9 +281,13 @@ fn rebuild_chapter_track(
 
     let stts_payload: Vec<u8> = {
         let mut v = vec![0u8, 0, 0, 0]; // version 0, no flags
+                                        // One entry per chapter, each covering exactly one sample. `stts` entries carry a
+                                        // *count* as well as a delta, and writing the chapter count into every entry makes
+                                        // the track claim chapters.len() squared samples \u{2014} which ffprobe resolves by
+                                        // truncating at the stsz count, and which a stricter player would not.
         v.extend_from_slice(&(deltas.len() as u32).to_be_bytes());
         for delta in &deltas {
-            v.extend_from_slice(&(chapters.len() as u32).to_be_bytes());
+            v.extend_from_slice(&1u32.to_be_bytes()); // one sample
             v.extend_from_slice(&(*delta as u32).to_be_bytes());
         }
         v
