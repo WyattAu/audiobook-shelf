@@ -25,6 +25,16 @@ fn main() -> ExitCode {
 
     // `--write` is opt-in and never the default: a tool that rewrites a library on the
     // strength of being pointed at it is a tool that eventually destroys one.
+    if let Some(at) = args.iter().position(|a| a == "--export") {
+        let format = args.get(at + 1).map(String::as_str).unwrap_or("");
+        return match export(&root, format, args.iter().any(|a| a == "--dry-run")) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("audiobook-shelf: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     if let Some(book) = args.iter().position(|a| a == "--write") {
         let name = args.get(book + 1).map_or("", String::as_str);
         if name.is_empty() {
@@ -128,6 +138,75 @@ fn main() -> ExitCode {
         // library, and a tool that refuses to list it is less useful than one that says so.
     }
     ExitCode::SUCCESS
+}
+
+/// Export every book's chapters as a sidecar next to its audio.
+///
+/// One file per book, named for the format, which is the half of the chapter workflow that
+/// is not writing: get the chapters out, edit them somewhere human, and put them back with
+/// `--write @`. The formats are the ones the estate reads, so an exported file round-trips.
+#[allow(clippy::expect_used, clippy::panic)]
+fn export(root: &std::path::Path, format: &str, dry_run: bool) -> Result<ExitCode, String> {
+    use audiobook_core::sidecar::SidecarChapters;
+    use audiobook_shelf::naming::ParseOptions;
+
+    let (extension, render) = match format {
+        "ffmetadata" => ("ffmeta.txt", 0u8),
+        "chapterx" => ("chap.txt", 1u8),
+        "timecode" => ("timecodes.txt", 2u8),
+        other => {
+            return Err(format!(
+                "unknown sidecar format `{other}`; expected ffmetadata, chapterx or \
+                 timecode"
+            ))
+        }
+    };
+
+    let books = audiobook_shelf::scan::scan(root, ParseOptions::default())
+        .map_err(|_| format!("cannot read {}", root.display()))?;
+    let mut written = 0usize;
+    for book in &books {
+        if book.files.is_empty() {
+            continue;
+        }
+        // Book-relative times, which is what a sidecar means and what `--write @` expects
+        // to read back.
+        let mut chapters = SidecarChapters::default();
+        let mut offset = 0u64;
+        for file in &book.files {
+            let bytes =
+                std::fs::read(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
+            let probe = audiobook_core::MediaProbe::probe(&bytes);
+            for (start_ms, title) in &probe.chapters {
+                chapters.chapters.push(audiobook_core::Chapter::new(
+                    title,
+                    offset.saturating_add(*start_ms),
+                    0,
+                ));
+            }
+            offset = offset.saturating_add(probe.duration_ms.unwrap_or(0));
+        }
+
+        let text = match render {
+            0 => chapters.to_ffmetadata(),
+            1 => chapters.to_chapter_x(),
+            _ => chapters.to_timecode(),
+        };
+        let sidecar = book.folder.join(format!("chapters.{extension}"));
+        if dry_run {
+            println!("would write {}", sidecar.display());
+        } else {
+            std::fs::write(&sidecar, text).map_err(|e| format!("{}: {e}", sidecar.display()))?;
+            println!("{}", sidecar.display());
+        }
+        written += 1;
+    }
+    if dry_run {
+        println!("dry run: {written} sidecar(s) would be written");
+    } else {
+        println!("{written} sidecar(s) written");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// A track, named the way a person would: "disc 2 track 3", or just "track 3" when the
@@ -404,6 +483,7 @@ fn usage() -> String {
 USAGE:
     audiobook-shelf <LIBRARY_DIR> [--subtitles] [--quiet]
     audiobook-shelf <LIBRARY_DIR> --write <SPEC> [--dry-run]
+    audiobook-shelf <LIBRARY_DIR> --export <FORMAT>
 
 WHAT IT DOES
     Treats each directory as one book, orders its files by disc and then track,
@@ -417,10 +497,13 @@ WHAT IT DOES
     documents.
 
 OPTIONS
-    --write SPEC  Write chapters into every MP3 in the library. SPEC is a
-                  `;`-separated list of `MM:SS Chapter`. Chapter times are
-                  book-relative and rebased onto each file, since a file's own
-                  CHAP frames are relative to that file.
+    --write SPEC  Write chapters into every audio file in the library. SPEC is
+                  a `;`-separated list of `MM:SS Chapter`, or `@FILE` to apply
+                  a sidecar in any supported format. Chapter times are
+                  book-relative and rebased onto each file.
+    --export FMT  Write each book's chapters as a sidecar next to its audio:
+                  `ffmetadata`, `chapterx` or `timecode`. Round-trips with
+                  `--write @`.
     --dry-run     With --write, report what would change and touch nothing.
     --subtitles   Read a trailing ` - ` segment as a subtitle. Off by default,
                   because a dash inside a title is common and splitting on it

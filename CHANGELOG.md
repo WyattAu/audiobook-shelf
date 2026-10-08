@@ -286,6 +286,21 @@ All found by running the tool against a real library, which is how these show up
   The dry-run output counts the cleared file too, so a dry run reports what a real run
   would do.
 
+### Added
+
+- **`--export ffmetadata|chapterx|timecode` writes each book's chapters as a sidecar next
+  to its audio**, which is the half of the chapter workflow the tool did not have: get the
+  chapters out, edit them somewhere human, put them back with `--write @`. The formats are
+  the ones the estate reads, so an exported file round-trips.
+
+  Times are book-relative, which is what a sidecar means and what `--write @` expects to
+  read back. Empty books are skipped, and `--dry-run` is honoured.
+
+  Verified against ffmpeg, which is the check that matters: an M4B's chapters exported as
+  FFMetadata, muxed back in by ffmpeg, and ffprobe reporting the identical chapter starts,
+  ends and titles on both files. Exporting is only worth having if the file it writes is
+  one ffmpeg accepts.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so
