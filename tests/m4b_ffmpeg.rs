@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use audiobook_shelf::m4b::write_m4b_chapters;
-use audiobook_shelf::write::{FileChapter, UnchangedReason, WriteOutcome};
+use audiobook_shelf::write::{FileChapter, WriteOutcome};
 
 fn tools_available() -> bool {
     ["ffmpeg", "ffprobe"].iter().all(|tool| {
@@ -141,18 +141,16 @@ fn duration_ms(path: &Path) -> u64 {
 }
 
 #[test]
-fn an_m4b_with_a_quicktime_track_is_declined_rather_than_quietly_ignored() {
+fn an_m4b_with_a_quicktime_track_is_rebuilt_and_ffprobe_reads_the_new_list() {
     if !tools_available() {
         eprintln!("SKIPPED: ffmpeg/ffprobe not on PATH, so there is no independent reader");
         return;
     }
-    // ffmpeg puts chapters into a QuickTime text track, and every M4B it produces has one.
-    // ffprobe and most players read the track in preference to the `chpl` box, so writing
-    // the box alone would leave them showing the chapters that were there before.
-    //
-    // This is the case that decides whether an M4B write is honest: claiming success would
-    // mean nobody re-checks a file they were told was fixed, and the defect would surface
-    // as a player showing old chapters in a file the tool said it had edited.
+    // ffmpeg puts chapters into a QuickTime text track, and ffprobe reads that track in
+    // preference to the `chpl` box. So the track has to be rebuilt, not just the box —
+    // the first version of this wrote the box, reported success, and ffprobe carried on
+    // showing the old chapters, which is the worst outcome available: nobody re-checks a
+    // file they were told was fixed.
     let file = TempM4b::with_chapters("rewrite", 20, &[(0, "Old One"), (10_000, "Old Two")]);
     let before = duration_ms(file.path());
     assert!(before > 0, "the fixture must be real audio");
@@ -164,34 +162,34 @@ fn an_m4b_with_a_quicktime_track_is_declined_rather_than_quietly_ignored() {
             FileChapter::new("New Two", 6_000, 20_000),
         ],
     )
-    .expect("the write itself is well formed");
-    assert_eq!(
-        outcome,
-        WriteOutcome::Unchanged {
-            reason: UnchangedReason::ChapterTrackNotWritable
-        },
-        "a file with a chapter track must be declined, not reported as written"
+    .expect("the write is well formed");
+    assert!(
+        matches!(outcome, WriteOutcome::Written { .. }),
+        "a chapter track is rebuilt, not refused: {outcome:?}"
     );
 
-    // And the file is untouched, so the old chapters still play.
     let titles: Vec<String> = ffprobe_titles(file.path())
         .into_iter()
         .map(|(t, _)| t)
         .collect();
     assert_eq!(
         titles,
-        vec!["Old One", "Old Two"],
-        "declined means the old chapters are still there: {titles:?}"
+        vec!["New One", "New Two"],
+        "ffprobe must read the new list from the rebuilt track: {titles:?}"
     );
 }
 
 #[test]
-fn an_edited_m4b_still_decodes_to_the_same_length() {
+fn a_rebuilt_m4b_still_decodes_to_the_same_length() {
     if !tools_available() {
         eprintln!("SKIPPED: ffmpeg/ffprobe not on PATH");
         return;
     }
-    let file = TempM4b::with_chapters("decode", 20, &[(0, "One")]);
+    // The audio sits in `mdat`, before the moov, and the rebuild appends only after the
+    // moov — so the playable length cannot change unless the audio moved. It is asserted
+    // rather than assumed, because "the offsets are absolute" is exactly the kind of claim
+    // a correctness argument gets wrong.
+    let file = TempM4b::with_chapters("decode", 20, &[(0, "One"), (10_000, "Two")]);
     let before = duration_ms(file.path());
     assert!(before > 0);
 
@@ -200,6 +198,7 @@ fn an_edited_m4b_still_decodes_to_the_same_length() {
         &[
             FileChapter::new("A", 0, 5_000),
             FileChapter::new("B", 5_000, 10_000),
+            FileChapter::new("C", 10_000, 20_000),
         ],
     )
     .expect("writes");
@@ -207,10 +206,8 @@ fn an_edited_m4b_still_decodes_to_the_same_length() {
     assert_eq!(
         duration_ms(file.path()),
         before,
-        "an in-place metadata edit must not change what the file plays"
+        "the rebuild must not change what the file plays"
     );
-
-    // And it decodes end to end, which a moved mdat would break.
     let decoded = Command::new("ffmpeg")
         .args([
             "-v",
@@ -225,7 +222,7 @@ fn an_edited_m4b_still_decodes_to_the_same_length() {
         .expect("run ffmpeg");
     assert!(
         decoded.status.success(),
-        "ffmpeg could not decode the edited M4B: {}",
+        "and it decodes end to end: {}",
         String::from_utf8_lossy(&decoded.stderr)
     );
 }
@@ -293,26 +290,31 @@ fn repeated_edits_keep_an_m4b_playable() {
 }
 
 #[test]
-fn a_track_only_chapter_list_is_also_declined() {
+fn a_track_only_chapter_list_is_rebuilt_into_a_working_track() {
     if !tools_available() {
         eprintln!("SKIPPED: ffmpeg/ffprobe not on PATH");
         return;
     }
-    // ffmpeg does not always emit a chpl box at all; a track-only file is the shape a
-    // user is most likely to hand this tool, and it is the one case where a chpl write
-    // would be *entirely* invisible.
+    // ffmpeg does not always emit a chpl box at all. A track-only file is the shape a user
+    // is most likely to hand this tool, and the rebuilt track is the only place the new
+    // chapters could live.
     let file = TempM4b::with_chapters("trackonly", 20, &[(0, "From The Track")]);
-    let outcome = write_m4b_chapters(file.path(), &[FileChapter::new("Written", 0, 20_000)])
-        .expect("the write is well formed");
+    write_m4b_chapters(
+        file.path(),
+        &[
+            FileChapter::new("Written One", 0, 10_000),
+            FileChapter::new("Written Two", 10_000, 20_000),
+        ],
+    )
+    .expect("writes");
+
+    let titles: Vec<String> = ffprobe_titles(file.path())
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
     assert_eq!(
-        outcome,
-        WriteOutcome::Unchanged {
-            reason: UnchangedReason::ChapterTrackNotWritable
-        }
-    );
-    assert_eq!(
-        ffprobe_titles(file.path()).len(),
-        1,
-        "and the track's chapter is still what ffprobe sees"
+        titles,
+        vec!["Written One", "Written Two"],
+        "and ffprobe sees the new ones, from the rebuilt track: {titles:?}"
     );
 }

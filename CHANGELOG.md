@@ -183,6 +183,41 @@ All found by running the tool against a real library, which is how these show up
   onto their file, so the fix above was being undone on the way in. Same run, one step
   downstream.
 
+### Changed
+
+- **The QuickTime chapter track is rebuilt, so `--write` now works on real M4Bs.** The
+  previous release declined every M4B ffmpeg produces, because ffmpeg puts chapters into a
+  QuickTime text track, players read that track in preference to the `chpl` box, and
+  rewriting the box alone left them showing the chapters that were there before. Declining
+  was the honest call at the time; it was also useless for the dominant audiobook format.
+
+  The track is now rebuilt to match the new chapter list: `stts` gains one duration per
+  chapter, in the track's own timescale, read from its `mdhd` rather than guessed;
+  `stsz` gains one size per sample; `stsc` becomes a single chunk; and the samples
+  themselves — a length prefix, the title, and the 12-byte `encd` box ffmpeg appends,
+  byte for byte — are appended after the `moov` with `stco` pointing at them.
+
+  Appending is why this is safe. Chunk offsets are absolute file positions, so pointing
+  past the moov is valid; `mdat` never moves; and the audio is asserted byte-for-byte
+  unchanged in the tests.
+
+  The `stsd` is deliberately reused rather than rebuilt: it describes the text sample
+  format, which has not changed, and re-deriving it would mean guessing at fields a player
+  needs. The `tkhd` duration is left alone too — it is in the *movie* timescale, and
+  scaling it wrongly would be worse than leaving a field players barely consult.
+
+  The track is identified by structure (`gmhd`, which only a text track carries) rather
+  than by track id, so a file whose ids are not what ffmpeg writes still works.
+
+### Fixed
+
+- **`--write` ignored `.m4b` files entirely.** The CLI dispatched on extension and the M4B
+  writer was never reachable from it: a book in the dominant format was silently skipped by
+  the one verb that exists to fix it. Found by running the verb against an M4B and checking
+  with ffprobe, which still showed the old chapters.
+- **The last chapter of an M4B book now runs to the end of its file** rather than ending
+  where it begins, matching the MP3 path.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

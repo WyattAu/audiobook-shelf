@@ -66,16 +66,12 @@ pub fn write_m4b_chapters(
     }
 
     // A QuickTime chapter track outranks the `chpl` box in ffprobe and in most players.
-    // Writing the box alone would leave those showing the old list, so a file that has a
-    // track is declined rather than reported as written. Detecting it needs the file
-    // parsed, which is cheap next to getting this wrong.
+    // Writing the box alone would leave those showing the old list, so when the file has a
+    // track it is rebuilt to match; if its structure is not one this module understands,
+    // the write is declined rather than half-applied.
     let parsed =
         mp4_core::Mp4File::parse(&original).map_err(|e| std::io::Error::other(e.to_string()))?;
-    if parsed.chapter_track_id.is_some() {
-        return Ok(WriteOutcome::Unchanged {
-            reason: UnchangedReason::ChapterTrackNotWritable,
-        });
-    }
+    let has_chapter_track = parsed.chapter_track_id.is_some();
 
     // What the file already carries, so an identical write is a no-op.
     let probe = MediaProbe::probe(&original);
@@ -94,12 +90,30 @@ pub fn write_m4b_chapters(
         });
     }
 
+    // Everything before the moov, which is the audio and whatever came with it. It is
+    // copied through untouched, because moving it is what invalidates chunk offsets.
+    let prefix_len: usize = top
+        .iter()
+        .take(moov_index)
+        .map(|b| b.encoded_len() as usize)
+        .sum();
+
     let mut moov = top.remove(moov_index);
 
-    // Strip every existing `chpl` from the tree, wherever it sits — ffmpeg nests it under
-    // `moov > udta`, but the format does not require that, and a reader that walked only
-    // one shape would miss the other.
+    // Strip every existing `chpl` from the tree, wherever it sits — ffmpeg nests it
+    // under `moov > udta`, but the format does not require that.
     strip_chpl(&mut moov);
+
+    let file_duration_ms = probe.duration_ms.unwrap_or(0);
+    let mut samples: Vec<u8> = Vec::new();
+    if has_chapter_track {
+        if let Err(_detail) = rebuild_chapter_track(&mut moov, chapters, file_duration_ms) {
+            return Ok(WriteOutcome::Unchanged {
+                reason: UnchangedReason::ChapterTrackNotWritable,
+            });
+        }
+        samples = chapter_sample_data(chapters);
+    }
 
     // An empty chapter list is a request to remove chapters, so no box is written.
     if !chapters.is_empty() {
@@ -110,8 +124,38 @@ pub fn write_m4b_chapters(
     // construction rather than by bookkeeping.
     let new_moov = moov.to_bytes();
 
-    let mut out =
-        Vec::with_capacity(original.len() - (moov.encoded_len() as usize) + new_moov.len());
+    // The chapter track's samples sit after the moov rather than inside `mdat`: chunk
+    // offsets are absolute file positions, so pointing at the end of the file is valid, and
+    // touching `mdat` is the thing this module exists to avoid.
+    //
+    // The offset could not be written into `stco` sooner, because it depends on the length
+    // of the moov that contains it. It is patched now, and only the *value* changes, so the
+    // moov's length is stable and the offset stays correct.
+    let sample_offset = prefix_len as u64 + new_moov.len() as u64;
+    if !samples.is_empty() {
+        patch_chapter_stco(&mut moov, sample_offset)?;
+        let patched = moov.to_bytes();
+        debug_assert_eq!(
+            patched.len(),
+            new_moov.len(),
+            "only the offset value changed"
+        );
+        let new_moov = patched;
+        let mut out = Vec::with_capacity(prefix_len + new_moov.len() + samples.len());
+        for box_ in &top {
+            out.extend_from_slice(&box_.to_bytes());
+        }
+        out.extend_from_slice(&new_moov);
+        out.extend_from_slice(&samples);
+        let delta = out.len() as i64 - original.len() as i64;
+        std::fs::write(path, &out)?;
+        return Ok(WriteOutcome::Written {
+            delta,
+            in_place: true,
+        });
+    }
+
+    let mut out = Vec::with_capacity(prefix_len + new_moov.len());
     for box_ in &top {
         out.extend_from_slice(&box_.to_bytes());
     }
@@ -122,9 +166,260 @@ pub fn write_m4b_chapters(
 
     Ok(WriteOutcome::Written {
         delta,
-        // The audio is before moov, so it cannot have moved.
         in_place: true,
     })
+}
+
+/// Rebuild the QuickTime chapter track inside `moov` to carry `chapters`.
+///
+/// The track is found by its `gmhd`, which only a text track carries — an audio track
+/// has `smhd` — so it is identified by structure rather than by track id, which a file
+/// with two text tracks could make ambiguous.
+///
+/// Three things change:
+///
+/// * `stts` gains one duration per chapter, in the track's own timescale. A player works
+///   out where chapter *i* starts by summing the durations before it, so a wrong duration
+///   shifts every chapter after it;
+/// * `stsz` gains one size per chapter, and the sizes are real: each sample is a length
+///   prefix, the title, and a 12-byte `encd` box;
+/// * `stco` is left at zero here and patched once the sample offset is known, because the
+///   offset depends on the length of the moov that contains it.
+///
+/// The existing `stsd` is kept as-is. It describes the text sample format, which has not
+/// changed, and rebuilding it would mean re-deriving the values a player needs to make
+/// sense of the samples.
+///
+/// # Errors
+///
+/// Returns an error when the track is not shaped as ffmpeg writes it — no `mdia`, no
+/// `mdhd`, no `stbl`, or a missing `stsd`. The caller declines rather than half-applying,
+/// and the reason is the caller's to report.
+fn rebuild_chapter_track(
+    moov: &mut Box_,
+    chapters: &[FileChapter],
+    file_duration_ms: u64,
+) -> Result<(), String> {
+    let Some(trak) = moov.children.iter_mut().find(|c| {
+        c.box_type == *b"trak"
+            && c.children.iter().any(|mdia| {
+                mdia.box_type == *b"mdia"
+                    && mdia.children.iter().any(|minf| {
+                        minf.box_type == *b"minf"
+                            && minf.children.iter().any(|g| g.box_type == *b"gmhd")
+                    })
+            })
+    }) else {
+        return Err(String::from("no text track found in the moov"));
+    };
+    let Some(mdia) = trak.children.iter_mut().find(|c| c.box_type == *b"mdia") else {
+        return Err(String::from("the text track has no mdia"));
+    };
+
+    // The timescale comes from the track's own `mdhd`, because the chapter times are in it
+    // and guessing a rate puts every chapter in the wrong place.
+    let timescale = {
+        let Some(mdhd) = mdia.children.iter().find(|c| c.box_type == *b"mdhd") else {
+            return Err(String::from("the text track has no mdhd"));
+        };
+        mdhd_timescale(&mdhd.payload)
+            .ok_or_else(|| String::from("the mdhd has no readable timescale"))?
+    };
+    if timescale == 0 {
+        return Err(String::from("the text track's timescale is zero"));
+    }
+
+    let Some(stbl) = mdia
+        .children
+        .iter_mut()
+        .find(|c| c.box_type == *b"minf")
+        .and_then(|minf| minf.children.iter_mut().find(|c| c.box_type == *b"stbl"))
+    else {
+        return Err(String::from("the text track has no stbl"));
+    };
+
+    // The chapter times are relative to the file, so they are scaled into the track's
+    // timescale. Each sample's duration runs to the next chapter's start; the last runs to
+    // the end of the file, which is what "the rest of the book" means here too.
+    let ticks = |ms: u64| -> u64 { ms.saturating_mul(u64::from(timescale)) / 1000 };
+    let mut deltas: Vec<u64> = chapters
+        .windows(2)
+        .map(|pair| ticks(pair[1].start_ms.saturating_sub(pair[0].start_ms)))
+        .collect();
+    if let Some(last) = chapters.last() {
+        let remaining = file_duration_ms.saturating_sub(last.start_ms);
+        deltas.push(ticks(remaining));
+    }
+    // A chapter list whose last entry is at or past the end of the file still needs a
+    // duration: zero would make the sample vanish from the timeline.
+    if deltas.is_empty() && !chapters.is_empty() {
+        deltas.push(ticks(file_duration_ms));
+    }
+
+    // The sizes are per sample, because the titles differ in length.
+    let sizes: Vec<u32> = chapters
+        .iter()
+        .map(|c| (2 + c.title.len() + 12) as u32)
+        .collect();
+
+    // The `stsd` is reused: it describes the text sample format, which is unchanged.
+    let Some(stsd) = stbl.children.iter().find(|c| c.box_type == *b"stsd") else {
+        return Err(String::from("the text track's stbl has no stsd"));
+    };
+    let stsd = stsd.clone();
+
+    let stts_payload: Vec<u8> = {
+        let mut v = vec![0u8, 0, 0, 0]; // version 0, no flags
+        v.extend_from_slice(&(deltas.len() as u32).to_be_bytes());
+        for (i, delta) in deltas.iter().enumerate() {
+            v.extend_from_slice(&(chapters.len() as u32).to_be_bytes());
+            v.extend_from_slice(&(*delta as u32).to_be_bytes());
+            let _ = i;
+        }
+        v
+    };
+    let stsz_payload: Vec<u8> = {
+        let mut v = vec![0u8, 0, 0, 0]; // version 0, no flags
+        v.extend_from_slice(&0u32.to_be_bytes()); // not uniform
+        v.extend_from_slice(&(sizes.len() as u32).to_be_bytes());
+        for size in &sizes {
+            v.extend_from_slice(&size.to_be_bytes());
+        }
+        v
+    };
+    let stsc_payload: Vec<u8> = {
+        // One chunk holding every sample, because the samples are appended as one run.
+        let mut v = vec![0u8, 0, 0, 0];
+        v.extend_from_slice(&1u32.to_be_bytes()); // entry count
+        v.extend_from_slice(&1u32.to_be_bytes()); // first chunk
+        v.extend_from_slice(&(chapters.len() as u32).to_be_bytes()); // samples per chunk
+        v.extend_from_slice(&1u32.to_be_bytes()); // sample description index
+        v
+    };
+    // The offset is patched once the moov's length is known.
+    let stco_payload: Vec<u8> = {
+        let mut v = vec![0u8, 0, 0, 0];
+        v.extend_from_slice(&1u32.to_be_bytes()); // entry count
+        v.extend_from_slice(&0u64.to_be_bytes()[..4]); // offset, patched below
+        v
+    };
+
+    stbl.children = vec![
+        stsd,
+        leaf_box(*b"stts", stts_payload),
+        leaf_box(*b"stsz", stsz_payload),
+        leaf_box(*b"stsc", stsc_payload),
+        leaf_box(*b"stco", stco_payload),
+    ];
+
+    // The track runs as long as its samples do.
+    let track_ticks: u64 = deltas.iter().sum();
+    set_durations(mdia, track_ticks);
+
+    Ok(())
+}
+
+/// The timescale in a `mdhd` payload, which differs by version.
+fn mdhd_timescale(payload: &[u8]) -> Option<u32> {
+    let version = *payload.first()?;
+    let timescale_at = if version == 0 { 12 } else { 20 };
+    let ts = payload.get(timescale_at..timescale_at + 4)?;
+    Some(u32::from_be_bytes([ts[0], ts[1], ts[2], ts[3]]))
+}
+
+/// Set the `mdhd` and `tkhd` durations to `ticks`, in their own timescales.
+fn set_durations(mdia: &mut Box_, ticks: u64) {
+    // mdhd: version (1) + flags (3) + creation (4) + modification (4) + timescale (4).
+    for child in &mut mdia.children {
+        if child.box_type == *b"mdhd" {
+            let version = child.payload.first().copied().unwrap_or(0);
+            let duration_at = if version == 0 { 16 } else { 24 };
+            let end = duration_at + if version == 0 { 4 } else { 8 };
+            if child.payload.len() >= end {
+                let bytes = if version == 0 {
+                    (ticks as u32).to_be_bytes().to_vec()
+                } else {
+                    ticks.to_be_bytes().to_vec()
+                };
+                child.payload[duration_at..end].copy_from_slice(&bytes);
+            }
+        }
+    }
+    // tkhd is a sibling of mdia, in the trak, and is in the *movie* timescale; left alone
+    // rather than wrongly scaled, because a player that uses it at all is comparing it
+    // against the movie duration, not the track's.
+}
+
+/// Patch the chapter track's `stco` to point at `offset`.
+fn patch_chapter_stco(moov: &mut Box_, offset: u64) -> Result<(), std::io::Error> {
+    let Some(trak) = moov.children.iter_mut().find(|c| {
+        c.box_type == *b"trak"
+            && c.children.iter().any(|mdia| {
+                mdia.box_type == *b"mdia"
+                    && mdia.children.iter().any(|minf| {
+                        minf.box_type == *b"minf"
+                            && minf.children.iter().any(|g| g.box_type == *b"gmhd")
+                    })
+            })
+    }) else {
+        return Err(std::io::Error::other("no text track to patch"));
+    };
+    let Some(stco) = trak
+        .children
+        .iter_mut()
+        .find(|c| c.box_type == *b"mdia")
+        .and_then(|mdia| {
+            mdia.children
+                .iter_mut()
+                .find(|c| c.box_type == *b"minf")
+                .and_then(|minf| {
+                    minf.children
+                        .iter_mut()
+                        .find(|c| c.box_type == *b"stbl")
+                        .and_then(|stbl| stbl.children.iter_mut().find(|c| c.box_type == *b"stco"))
+                })
+        })
+    else {
+        return Err(std::io::Error::other("no stco in the text track"));
+    };
+    // stco payload: version (1) + flags (3) + entry count (4) + the offset (4) = 12.
+    if stco.payload.len() < 12 {
+        return Err(std::io::Error::other(
+            "the stco is too short to hold an offset",
+        ));
+    }
+    stco.payload[8..12].copy_from_slice(&(offset as u32).to_be_bytes());
+    Ok(())
+}
+
+/// The concatenated chapter samples: a length prefix, the title, and the `encd` box.
+///
+/// The `encd` box is what ffmpeg appends to every chapter sample, byte for byte; the
+/// length prefix counts the title only, so a sample is `2 + title + 12` bytes.
+fn chapter_sample_data(chapters: &[FileChapter]) -> Vec<u8> {
+    const ENCD: &[u8] = &[
+        0x00, 0x00, 0x00, 0x0C, b'e', b'n', b'c', b'd', 0x00, 0x00, 0x01, 0x00,
+    ];
+    let mut blob = Vec::new();
+    for chapter in chapters {
+        let title = chapter.title.as_bytes();
+        blob.extend_from_slice(&(title.len() as u16).to_be_bytes());
+        blob.extend_from_slice(title);
+        blob.extend_from_slice(ENCD);
+    }
+    blob
+}
+
+/// A box with a payload and no children.
+fn leaf_box(box_type: mp4_core::BoxType, payload: Vec<u8>) -> Box_ {
+    Box_ {
+        box_type,
+        size: Size::Fixed(0),
+        size_form: SizeForm::Normal,
+        extended_type: None,
+        payload,
+        children: Vec::new(),
+    }
 }
 
 /// Remove every `chpl` box from a tree, recursing into children.

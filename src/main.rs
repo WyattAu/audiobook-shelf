@@ -259,8 +259,25 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
                     file.path.display()
                 );
             } else {
-                let outcome = audiobook_shelf::write::write_mp3_chapters(&file.path, &mine)
-                    .map_err(|e| format!("{}: {e}", file.path.display()))?;
+                // The container decides which writer runs: an MP3 takes an ID3v2 tag and
+                // an MP4 takes boxes, and writing the wrong one produces a file that plays
+                // as silence. Extension is the test because that is what a library is
+                // organised by, and the writers themselves re-check the bytes.
+                let is_mp4 = file
+                    .path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| {
+                        let e = e.to_ascii_lowercase();
+                        e == "m4b" || e == "m4a" || e == "mp4"
+                    })
+                    .unwrap_or(false);
+                let outcome = if is_mp4 {
+                    audiobook_shelf::m4b::write_m4b_chapters(&file.path, &mine)
+                } else {
+                    audiobook_shelf::write::write_mp3_chapters(&file.path, &mine)
+                }
+                .map_err(|e| format!("{}: {e}", file.path.display()))?;
                 match outcome {
                     audiobook_shelf::write::WriteOutcome::Written { delta, .. } => {
                         println!("{} ({delta:+} bytes)", file.path.display())
