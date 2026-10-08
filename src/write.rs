@@ -108,6 +108,14 @@ pub enum UnchangedReason {
     UnsupportedContainer,
     /// The new tag would not fit, and no padding can be reclaimed.
     TooLarge,
+    /// The file carries a QuickTime chapter track alongside the `chpl` box, and the track
+    /// cannot be rewritten.
+    ///
+    /// Writing only the `chpl` would succeed in the narrow sense that the box is updated,
+    /// and fail in the sense that matters: players and ffprobe prefer the track, so they
+    /// would keep showing the chapters that were there before. Claiming success would be
+    /// worse than declining, because nobody re-checks a file they were told was fixed.
+    ChapterTrackNotWritable,
 }
 
 impl std::fmt::Display for UnchangedReason {
@@ -118,6 +126,11 @@ impl std::fmt::Display for UnchangedReason {
             UnchangedReason::TooLarge => {
                 f.write_str("the chapters would not fit and no padding can be reclaimed")
             }
+            UnchangedReason::ChapterTrackNotWritable => f.write_str(
+                "this file carries a QuickTime chapter track, which players read in \
+                 preference to the chpl box this would write, so the edit would not be \
+                 visible",
+            ),
         }
     }
 }

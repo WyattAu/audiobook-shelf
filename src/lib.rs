@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 pub mod layout;
+pub mod m4b;
 pub mod naming;
 pub mod scan;
 pub mod write;

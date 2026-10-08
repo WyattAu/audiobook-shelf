@@ -141,6 +141,48 @@ All found by running the tool against a real library, which is how these show up
   the assertion that fails is downstream of the parser. Diagnosed by asserting on the
   oracle's own output first, which is the order that finds the real fault.
 
+### Added
+
+- **M4B chapters, written or refused by name.** `m4b::write_m4b_chapters` writes a `chpl`
+  box into an M4B whose `moov` is the last box in the file, the shape ffmpeg produces.
+  Growing `moov` then changes only where the file ends; `mdat` and every chunk offset in
+  it stay put, which is why the write is safe rather than reckless.
+
+  The condition is checked, not assumed. A file whose `moov` is not last is declined as
+  `UnsupportedContainer`, because growing it would invalidate every chunk offset in the
+  file at once, and the failure it avoids is not a bad chapter list but an audiobook that
+  plays as silence.
+
+- **An M4B with a QuickTime chapter track is declined as
+  `ChapterTrackNotWritable`, deliberately.** ffmpeg puts chapters into a QuickTime text
+  track, and ffprobe and most players read the track in preference to the `chpl` box.
+  Writing the box alone updates it, and leaves those players showing the chapters that
+  were there before. That is worse than declining, because nobody re-checks a file they
+  were told was fixed.
+
+  An M4B **without** a track — which ffmpeg produces when the chapter list is empty — is
+  written and verified visible to ffprobe, so the chpl path is proven where it is allowed
+  rather than only proving refusals elsewhere.
+
+- An M4B with an existing `chpl` under `moov > udta` is replaced, not added to: ffmpeg
+  nests it there, and a writer that appended to `moov` would leave two boxes and a reader
+  would see whichever it found first.
+
+### Fixed
+
+- **`--write` treated the first field of a timestamp as minutes**, turning `5:00` into 300
+  seconds and putting every chapter sixty times further into the book than asked, with no
+  error to say so. Found by running the verb against a real library: the chapters landed
+  at 300 seconds, which is 60x the requested offset and looks like nothing at all in a
+  report that only shows the files it touched.
+- **The last chapter of a book was written with an end equal to its start.** A spec line
+  with no successor has nothing to end against, and a zero-length chapter is one a player
+  cannot skip past. It is written open-ended, which the M4B writer resolves to the file's
+  measured duration.
+- **The CLI's rebase collapsed open-ended chapters to an end of zero** while rebasing them
+  onto their file, so the fix above was being undone on the way in. Same run, one step
+  downstream.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so
