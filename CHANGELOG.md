@@ -265,6 +265,27 @@ All found by running the tool against a real library, which is how these show up
   multi-disc book inside a series folder (where the audio is two levels below the series
   name and the disc folders belong to the book, not the series).
 
+### Added
+
+- **`--write @chapters.txt` applies a sidecar file**, in any of the four formats the estate
+  reads, which is the workflow the tool exists for: rip, export a chapter list, edit it,
+  apply it. Times in a sidecar are book-relative, so they are rebased onto each file exactly
+  as an inline spec is. Sidecar warnings are printed rather than swallowed, because a file a
+  human edited and got nearly right is about to have its defects written into audio.
+
+### Fixed
+
+- **Applying a chapter list merged it with the old one.** A spec describes the whole book,
+  but a file whose span held none of the new chapters kept the chapters a *previous* write
+  had given it: the previous sidecar's last chapter sitting next to this one's first, which
+  is a file that contradicts itself. A spec now replaces the book's entire chapter list, and
+  a file whose span holds none of it is cleared \u{2014} matching the semantics the M4B
+  writer already had. Found by applying two different sidecars to the same book and seeing
+  the second's chapters alongside the first's.
+
+  The dry-run output counts the cleared file too, so a dry run reports what a real run
+  would do.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

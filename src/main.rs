@@ -149,41 +149,62 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
     use audiobook_shelf::naming::ParseOptions;
     use audiobook_shelf::write::FileChapter;
 
-    // `00:10 Chapter` per line. Simple on purpose: this is a maintenance command, not a
-    // parser with a documented grammar, and every convenience added here is a way to write
-    // the wrong time into a file.
-    let starts: Vec<(u64, String)> = spec
-        .split(';')
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let (stamp, title) = line
-                .trim()
-                .split_once(' ')
-                .ok_or_else(|| format!("`{line}` is not `MM:SS Chapter`"))?;
-            let parts: Vec<u64> = stamp
-                .split(':')
-                .map(|p| {
-                    p.parse::<u64>()
-                        .map_err(|_| format!("`{stamp}` is not a time"))
-                })
-                .collect::<Result<_, _>>()?;
-            // The leading field is **seconds**, then minutes, then hours — the order
-            // audiobooks and ffmpeg's own `CHAPTERX` form both use, so `5:00` is five
-            // minutes and `1:02:03` is one hour two minutes three seconds.
-            //
-            // Reading the first field as minutes instead, which is the obvious mistake and
-            // the one this originally made, turns every time into sixty times itself:
-            // `5:00` becomes 300 seconds and a chapter list lands nowhere near where it
-            // was asked to go, with no error to say so.
-            let seconds = match parts.as_slice() {
-                [s] => *s,
-                [m, s] => m * 60 + s,
-                [h, m, s] => h * 3600 + m * 60 + s,
-                _ => return Err(format!("`{stamp}` has too many parts")),
-            };
-            Ok((seconds * 1000, String::from(title)))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    // A spec beginning `@` names a sidecar file, in any of the four formats the estate
+    // reads, which is the real workflow: rip, export a chapter list, edit it, apply it.
+    // Everything else is inline `MM:SS Chapter` pairs separated by `;`.
+    let starts: Vec<(u64, String)> = if let Some(sidecar_path) = spec.strip_prefix('@') {
+        let text = std::fs::read_to_string(sidecar_path)
+            .map_err(|e| format!("cannot read {sidecar_path}: {e}"))?;
+        let parsed =
+            audiobook_core::sidecar::parse(&text).map_err(|e| format!("{sidecar_path}: {e}"))?;
+        if parsed.chapters.is_empty() {
+            return Err(format!("{sidecar_path}: no chapters in it"));
+        }
+        if parsed.has_warnings() {
+            // The sidecar reader reports files a human edited and got nearly right. A
+            // silent pass here writes those files' defects into audio.
+            for warning in &parsed.warnings {
+                eprintln!("warning: {warning:?}");
+            }
+        }
+        parsed
+            .chapters
+            .iter()
+            .map(|c| (c.start_ms, c.title.clone()))
+            .collect()
+    } else {
+        spec.split(';')
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let (stamp, title) = line
+                    .trim()
+                    .split_once(' ')
+                    .ok_or_else(|| format!("`{line}` is not `MM:SS Chapter`"))?;
+                let parts: Vec<u64> = stamp
+                    .split(':')
+                    .map(|p| {
+                        p.parse::<u64>()
+                            .map_err(|_| format!("`{stamp}` is not a time"))
+                    })
+                    .collect::<Result<_, _>>()?;
+                // The leading field is **seconds**, then minutes, then hours — the order
+                // audiobooks and ffmpeg's own `CHAPTERX` form both use, so `5:00` is five
+                // minutes and `1:02:03` is one hour two minutes three seconds.
+                //
+                // Reading the first field as minutes instead, which is the obvious mistake and
+                // the one this originally made, turns every time into sixty times itself:
+                // `5:00` becomes 300 seconds and a chapter list lands nowhere near where it
+                // was asked to go, with no error to say so.
+                let seconds = match parts.as_slice() {
+                    [s] => *s,
+                    [m, s] => m * 60 + s,
+                    [h, m, s] => h * 3600 + m * 60 + s,
+                    _ => return Err(format!("`{stamp}` has too many parts")),
+                };
+                Ok((seconds * 1000, String::from(title)))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
     if starts.is_empty() {
         return Err("no chapters given".to_string());
     }
@@ -253,57 +274,60 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
                     }
                 })
                 .collect();
-            if mine.is_empty() {
-                continue;
-            }
+            // A spec describes the *whole book*, so a file whose span holds none of its
+            // chapters has those chapters removed rather than skipped. Skipping would mix
+            // old and new lists in one book: the previous sidecar's last chapter sitting
+            // next to this one's first, which is a file that contradicts itself. The M4B
+            // writer already had these semantics; this makes the MP3 path match.
             if dry_run {
                 println!(
                     "would write {} chapter(s) to {}",
                     mine.len(),
                     file.path.display()
                 );
+                written += 1;
+                continue;
+            }
+
+            // The container decides which writer runs: an MP3 takes an ID3v2 tag and an MP4
+            // takes boxes, and writing the wrong one produces a file that plays as silence.
+            // Extension is the test because that is what a library is organised by, and the
+            // writers themselves re-check the bytes.
+            let is_mp4 = file
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| {
+                    let e = e.to_ascii_lowercase();
+                    e == "m4b" || e == "m4a" || e == "mp4"
+                })
+                .unwrap_or(false);
+            let outcome = if is_mp4 {
+                audiobook_shelf::m4b::write_m4b_chapters(&file.path, &mine)
             } else {
-                // The container decides which writer runs: an MP3 takes an ID3v2 tag and
-                // an MP4 takes boxes, and writing the wrong one produces a file that plays
-                // as silence. Extension is the test because that is what a library is
-                // organised by, and the writers themselves re-check the bytes.
-                let is_mp4 = file
-                    .path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| {
-                        let e = e.to_ascii_lowercase();
-                        e == "m4b" || e == "m4a" || e == "mp4"
-                    })
-                    .unwrap_or(false);
-                let outcome = if is_mp4 {
-                    audiobook_shelf::m4b::write_m4b_chapters(&file.path, &mine)
-                } else {
-                    audiobook_shelf::write::write_mp3_chapters(&file.path, &mine)
-                };
-                // A failure is recorded and the pass continues, because a book with twenty
-                // files where the third refuses must not leave the other seventeen
-                // unwritten: one refusal per run is how a fix takes twenty runs to converge.
-                let outcome = match outcome {
-                    Ok(outcome) => outcome,
-                    Err(e) => {
-                        failures.push(format!("{}: {e}", file.path.display()));
-                        continue;
-                    }
-                };
-                match outcome {
-                    audiobook_shelf::write::WriteOutcome::Written { delta, .. } => {
-                        println!("{} ({delta:+} bytes)", file.path.display())
-                    }
-                    audiobook_shelf::write::WriteOutcome::Unchanged { reason } => {
-                        println!("{} unchanged: {reason}", file.path.display())
-                    }
-                    // `WriteOutcome` is `#[non_exhaustive]`. An unrecognised outcome is
-                    // named rather than ignored, because a write path that silently skips
-                    // an outcome is a write path that claims to have done something it
-                    // did not.
-                    other => println!("{} unrecognised outcome: {other:?}", file.path.display()),
+                audiobook_shelf::write::write_mp3_chapters(&file.path, &mine)
+            };
+            // A failure is recorded and the pass continues, because a book with twenty
+            // files where the third refuses must not leave the other seventeen unwritten:
+            // one refusal per run is how a fix takes twenty runs to converge.
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    failures.push(format!("{}: {e}", file.path.display()));
+                    continue;
                 }
+            };
+            match outcome {
+                audiobook_shelf::write::WriteOutcome::Written { delta, .. } => {
+                    println!("{} ({delta:+} bytes)", file.path.display())
+                }
+                audiobook_shelf::write::WriteOutcome::Unchanged { reason } => {
+                    println!("{} unchanged: {reason}", file.path.display())
+                }
+                // `WriteOutcome` is `#[non_exhaustive]`. An unrecognised outcome is named
+                // rather than ignored, because a write path that silently skips an outcome
+                // is a write path that claims to have done something it did not.
+                other => println!("{} unrecognised outcome: {other:?}", file.path.display()),
             }
             written += 1;
         }
