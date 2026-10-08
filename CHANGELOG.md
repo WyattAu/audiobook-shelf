@@ -239,6 +239,14 @@ All found by running the tool against a real library, which is how these show up
   corruption on the second, the growth on the third. Neither was visible to a test that
   wrote once and read once.
 
+### Changed
+
+- **`--write` records a refusal and continues, rather than aborting the pass.** A book with
+  twenty files where the third refuses must not leave the other seventeen unwritten: one
+  refusal per run is how a fix takes twenty runs to converge. Every failure is listed at
+  the end with its reason, and the exit is non-zero so a scripted fix knows the library is
+  not clean.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

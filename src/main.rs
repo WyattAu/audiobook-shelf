@@ -208,6 +208,7 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
     let books = audiobook_shelf::scan::scan(root, ParseOptions::default())
         .map_err(|_| format!("cannot read {}", root.display()))?;
     let mut written = 0usize;
+    let mut failures: Vec<String> = Vec::new();
     for book in &books {
         if book.files.is_empty() {
             continue;
@@ -276,8 +277,17 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
                     audiobook_shelf::m4b::write_m4b_chapters(&file.path, &mine)
                 } else {
                     audiobook_shelf::write::write_mp3_chapters(&file.path, &mine)
-                }
-                .map_err(|e| format!("{}: {e}", file.path.display()))?;
+                };
+                // A failure is recorded and the pass continues, because a book with twenty
+                // files where the third refuses must not leave the other seventeen
+                // unwritten: one refusal per run is how a fix takes twenty runs to converge.
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        failures.push(format!("{}: {e}", file.path.display()));
+                        continue;
+                    }
+                };
                 match outcome {
                     audiobook_shelf::write::WriteOutcome::Written { delta, .. } => {
                         println!("{} ({delta:+} bytes)", file.path.display())
@@ -299,6 +309,15 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
         println!("dry run: {written} file(s) would change");
     } else {
         println!("{written} file(s) written");
+    }
+    if !failures.is_empty() {
+        println!("\n{} file(s) could not be written:", failures.len());
+        for failure in &failures {
+            println!("  · {failure}");
+        }
+        // Exit non-zero so a scripted fix knows the library is not clean, while every
+        // other file has still been written.
+        return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
 }
