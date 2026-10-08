@@ -118,6 +118,7 @@ pub fn scan(root: &Path, options: ParseOptions) -> Result<Vec<Book>, ScanError> 
             books.push(Book {
                 folder: path.clone(),
                 name: BookName::default(),
+                series: None,
                 files: vec![BookFile::from_path(&path, root)],
             });
         }
@@ -186,6 +187,16 @@ fn walk(
         let mut book = Book {
             folder: dir.to_path_buf(),
             name: BookName::parse_with(&path_name(dir), options),
+            // The series is named by the folder above the book, which is the one place a
+            // series name is written down in this convention. `None` when the book is in
+            // the library root, which is no series rather than a series of one.
+            series: {
+                let parent = dir.parent().map(path_name);
+                match parent {
+                    Some(parent) if !parent.is_empty() && parent != path_name(root) => Some(parent),
+                    _ => None,
+                }
+            },
             files,
         };
         book.sort_files();
@@ -350,6 +361,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Nothing"),
             name: BookName::parse("Nothing"),
+            series: None,
             files: Vec::new(),
         };
         let findings = check_layout(&book);
@@ -366,6 +378,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::parse("Book"),
+            series: None,
             files: vec![
                 BookFile::from_path(Path::new("/lib/Book/01.mp3"), Path::new("/lib")),
                 BookFile::from_path(Path::new("/lib/Book/03.mp3"), Path::new("/lib")),
@@ -382,6 +395,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::parse("Book"),
+            series: None,
             files: vec![
                 BookFile::from_path(Path::new("/lib/Book/01.mp3"), Path::new("/lib")),
                 BookFile::from_path(Path::new("/lib/Book/01.mp3"), Path::new("/lib")),
@@ -397,6 +411,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/{Sam Tsoutsouvas}"),
             name: BookName::parse("{Sam Tsoutsouvas}"),
+            series: None,
             files: vec![BookFile::from_path(
                 Path::new("/lib/{Sam Tsoutsouvas}/01.mp3"),
                 Path::new("/lib"),
@@ -418,6 +433,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/1994 - Animal Farm"),
             name: BookName::parse("1994 - Animal Farm"),
+            series: None,
             files: vec![
                 BookFile::from_path(
                     Path::new("/lib/1994 - Animal Farm/01.mp3"),

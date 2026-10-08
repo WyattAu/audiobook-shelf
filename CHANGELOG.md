@@ -247,6 +247,24 @@ All found by running the tool against a real library, which is how these show up
   the end with its reason, and the exit is non-zero so a scripted fix knows the library is
   not clean.
 
+### Added
+
+- **`Book::series` is populated, from the folder that contains the book.** It was declared
+  and documented as never set, which is a wart: a book folder's own name carries a sequence
+  *number* and never the series it belongs to, so the series name is written in exactly one
+  place \u{2014} the folder above. A library laid out as `Author/Series/Book 1` now reports
+  the series as `Series`, with the sequence coming from the book folder's own name as before.
+
+  The immediate parent is used, not the grandparent: `Author/Series/Book` must report
+  `Series` and not collapse two levels of container into one name. A book directly in the
+  library root reports `None`, which is no series rather than a series of one \u{2014}
+  inventing a series from the root would group unrelated books together.
+
+  The listing shows it, and four tests pin the cases that decide whether it works: the
+  plain series folder, a book in the root, the nested `Author/Series/Book` shape, and a
+  multi-disc book inside a series folder (where the audio is two levels below the series
+  name and the disc folders belong to the book, not the series).
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

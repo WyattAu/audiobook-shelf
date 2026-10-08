@@ -84,6 +84,9 @@ fn main() -> ExitCode {
             );
             // A book with no readable title shows its folder name rather than a blank
             // line, so a listing always says what it is looking at.
+            if let Some(series) = &book.series {
+                println!("    [{series}]");
+            }
             let label = if book.name.title.is_empty() {
                 book.folder
                     .file_name()

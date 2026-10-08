@@ -85,6 +85,14 @@ pub struct Book {
     pub folder: PathBuf,
     /// The folder name, parsed.
     pub name: BookName,
+    /// The series this book belongs to, taken from the folder that contains it.
+    ///
+    /// A library laid out as `Author/Series/Book 1` names the series by the folder the book
+    /// sits in, which is the one place a series name is written down: a book folder's own
+    /// name carries a sequence *number* and never the series it belongs to. `None` when the
+    /// book is directly in the library root, which is a book with no series rather than a
+    /// series of one.
+    pub series: Option<String>,
     /// Its files, in playing order.
     pub files: Vec<BookFile>,
 }
@@ -261,6 +269,7 @@ mod tests {
         let mut book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(Some(2), Some(1), "disc2-track01"),
                 file(Some(1), Some(10), "disc1-track10"),
@@ -288,6 +297,7 @@ mod tests {
         let mut book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(None, Some(9), "09"),
                 file(None, Some(10), "10"),
@@ -306,6 +316,7 @@ mod tests {
         let mut book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(Some(2), Some(1), "d2t1"),
                 file(None, Some(1), "loose"),
@@ -322,6 +333,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(None, Some(1), "01"),
                 file(None, Some(4), "04"),
@@ -352,6 +364,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Multi"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(Some(1), Some(1), "d1t1"),
                 file(Some(1), Some(2), "d1t2"),
@@ -372,6 +385,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Multi"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(Some(1), Some(1), "d1t1"),
                 file(Some(2), Some(1), "d2t1"),
@@ -393,6 +407,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::default(),
+            series: None,
             files: vec![file(None, Some(1), "01"), file(None, Some(1), "01 copy")],
         };
         assert_eq!(
@@ -411,6 +426,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Book"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(None, None, "Chapter One"),
                 file(None, None, "Chapter Two"),
@@ -426,6 +442,7 @@ mod tests {
         let book = Book {
             folder: PathBuf::from("/lib/Multi"),
             name: BookName::default(),
+            series: None,
             files: vec![
                 file(Some(1), Some(1), "d1t1"),
                 file(Some(2), Some(1), "d2t1"),

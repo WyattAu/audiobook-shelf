@@ -347,3 +347,80 @@ fn the_helpers_agree_about_what_is_audio() {
     let entry = BookFile::from_path(Path::new("/lib/Multi/Disc 2/07.mp3"), Path::new("/lib"));
     assert_eq!((entry.disc, entry.track), (Some(2), Some(7)));
 }
+
+#[test]
+fn a_series_folder_names_the_books_inside_it() {
+    // `Author/Series/Book 1` is the layout the convention documents, and the series name is
+    // written nowhere else: a book folder's own name carries a sequence number and never
+    // the series it belongs to.
+    let tree = TempTree::new("seriesname");
+    tree.write("Sword of Truth/1 - Wizards First Rule/01.mp3", &fake_mp3());
+    tree.write("Sword of Truth/2 - Stone of Tears/01.mp3", &fake_mp3());
+
+    let books = scan(&tree);
+    assert_eq!(books.len(), 2);
+    let series: Vec<&str> = books
+        .iter()
+        .map(|b| b.series.as_deref().expect("series is named"))
+        .collect();
+    assert!(series.iter().all(|s| *s == "Sword of Truth"), "{series:?}");
+    // And the sequence numbers are the books' own, not the series'.
+    let mut titles: Vec<(Option<u32>, &str)> = books
+        .iter()
+        .map(|b| (b.name.series_index, b.name.title.as_str()))
+        .collect();
+    titles.sort();
+    assert_eq!(
+        titles,
+        vec![(Some(1), "Wizards First Rule"), (Some(2), "Stone of Tears")]
+    );
+}
+
+#[test]
+fn a_book_directly_in_the_library_root_has_no_series() {
+    // `None` rather than a series of one: the root is a container, not a series, and
+    // inventing a series from it would group unrelated books together.
+    let tree = TempTree::new("rootseries");
+    tree.write("Standalone/01.mp3", &fake_mp3());
+    let books = scan(&tree);
+    assert_eq!(books.len(), 1);
+    assert!(books[0].series.is_none(), "the root is not a series");
+}
+
+#[test]
+fn a_nested_series_container_names_the_immediate_parent() {
+    // `Author/Series/Book`: the series is the folder directly above the book, not the
+    // author two levels up. Two levels of container must not be collapsed into one name.
+    let tree = TempTree::new("nested");
+    tree.write(
+        "Terry Goodkind/Sword of Truth/1 - Wizards First Rule/01.mp3",
+        &fake_mp3(),
+    );
+    let books = scan(&tree);
+    assert_eq!(books.len(), 1);
+    assert_eq!(
+        books[0].series.as_deref(),
+        Some("Sword of Truth"),
+        "the immediate parent, not the author"
+    );
+}
+
+#[test]
+fn a_series_folder_holding_discs_still_names_the_series() {
+    // Multi-disc books inside a series folder: the disc folders are the book's, and the
+    // series folder is two levels up from the audio. Getting this wrong reports either the
+    // series as a book or the book with no series.
+    let tree = TempTree::new("seriesdisc");
+    tree.write(
+        "Sword of Truth/1 - Wizards First Rule/Disc 1/01.mp3",
+        &fake_mp3(),
+    );
+    tree.write(
+        "Sword of Truth/1 - Wizards First Rule/Disc 2/01.mp3",
+        &fake_mp3(),
+    );
+    let books = scan(&tree);
+    assert_eq!(books.len(), 1, "one book across two discs");
+    assert_eq!(books[0].series.as_deref(), Some("Sword of Truth"));
+    assert_eq!(books[0].files.len(), 2);
+}
