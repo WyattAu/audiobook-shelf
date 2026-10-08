@@ -218,6 +218,27 @@ All found by running the tool against a real library, which is how these show up
 - **The last chapter of an M4B book now runs to the end of its file** rather than ending
   where it begins, matching the MP3 path.
 
+### Fixed
+
+- **A second edit on an M4B corrupted it.** The first edit appended the chapter samples
+  after the moov as raw bytes, which is valid for a player and invisible to every test that
+  reads the file once \u{2014} and unparseable by anything that reads it twice. The next edit
+  walked the blob as a box header and found a box named from its own bytes declaring more
+  bytes than the file had left.
+- **Repeated edits grew the file without bound**, because the old sample blob was kept and
+  a fresh one appended on every pass. The samples now live in a `free` box \u{2014} which a
+  parser is required to skip, and which is disposable by definition \u{2014} and each edit
+  replaces it. Two identical writes at the end of a six-edit history leave the file the
+  same length, which is the property that matters and the one asserted.
+
+  The decline rule changed with this: boxes after the moov are acceptable if they are all
+  `free`, because `free` is disposable by definition, and that is what makes a second edit
+  possible at all. Anything else after the moov is still declined.
+
+  Both were found by running five edits against a real file and watching the size: the
+  corruption on the second, the growth on the third. Neither was visible to a test that
+  wrote once and read once.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

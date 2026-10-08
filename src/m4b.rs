@@ -53,17 +53,11 @@ pub fn write_m4b_chapters(
     let mut top =
         mp4_core::parse_boxes(&original).map_err(|e| std::io::Error::other(e.to_string()))?;
 
-    // The moov must be the last top-level box, or nothing after it can be trusted.
+    // The moov must be the last box that matters, or nothing before it can be trusted.
     let moov_index = top
         .iter()
         .position(|b| b.box_type == *b"moov")
         .ok_or_else(|| std::io::Error::other("no moov box"))?;
-    let moov_is_last = moov_index + 1 == top.len();
-    if !moov_is_last {
-        return Ok(WriteOutcome::Unchanged {
-            reason: UnchangedReason::UnsupportedContainer,
-        });
-    }
 
     // A QuickTime chapter track outranks the `chpl` box in ffprobe and in most players.
     // Writing the box alone would leave those showing the old list, so when the file has a
@@ -90,13 +84,28 @@ pub fn write_m4b_chapters(
         });
     }
 
-    // Everything before the moov, which is the audio and whatever came with it. It is
-    // copied through untouched, because moving it is what invalidates chunk offsets.
-    let prefix_len: usize = top
+    // Boxes after the moov are disposable if they are all `free` — and one is, when
+    // this module wrote the file before, because that is where the chapter samples live.
+    // Anything else after the moov means growing it would shift that box, which is declined:
+    // the alternative is invalidating every chunk offset in the file at once.
+    let trailing: Vec<&Box_> = top[moov_index + 1..].iter().collect();
+    if trailing.iter().any(|b| b.box_type != *b"free") {
+        return Ok(WriteOutcome::Unchanged {
+            reason: UnchangedReason::UnsupportedContainer,
+        });
+    }
+
+    // Everything before the moov is the audio and whatever came with it. It is copied
+    // through untouched, because moving it is what invalidates chunk offsets.
+    let prefix_len: usize = top[..moov_index]
         .iter()
-        .take(moov_index)
         .map(|b| b.encoded_len() as usize)
         .sum();
+
+    // The trailing `free` boxes are dropped here: they held the previous samples, and a
+    // fresh one is written below sized to the new samples. Keeping them would grow the file
+    // by one box on every edit, which is the accumulation padding exists to prevent.
+    top.truncate(moov_index + 1);
 
     let mut moov = top.remove(moov_index);
 
@@ -125,50 +134,54 @@ pub fn write_m4b_chapters(
     let new_moov = moov.to_bytes();
 
     // The chapter track's samples sit after the moov rather than inside `mdat`: chunk
-    // offsets are absolute file positions, so pointing at the end of the file is valid, and
-    // touching `mdat` is the thing this module exists to avoid.
+    // offsets are absolute file positions, so pointing past the moov is valid, and touching
+    // `mdat` is the thing this module exists to avoid.
+    //
+    // They are wrapped in a `free` box, which a parser is required to skip, because raw
+    // bytes there make the *next* parse walk into garbage — the second edit on a file
+    // failed exactly that way, with a box named from the blob's own bytes declaring more
+    // bytes than the file had left.
     //
     // The offset could not be written into `stco` sooner, because it depends on the length
-    // of the moov that contains it. It is patched now, and only the *value* changes, so the
-    // moov's length is stable and the offset stays correct.
-    let sample_offset = prefix_len as u64 + new_moov.len() as u64;
+    // of the moov that contains it. It is patched afterwards, and only the value changes,
+    // so the moov's length is stable and the offset stays correct.
+    let free_payload_len = samples.len() + SAMPLE_PADDING;
+    let sample_offset = prefix_len as u64 + new_moov.len() as u64 + 8;
     if !samples.is_empty() {
         patch_chapter_stco(&mut moov, sample_offset)?;
-        let patched = moov.to_bytes();
-        debug_assert_eq!(
-            patched.len(),
-            new_moov.len(),
-            "only the offset value changed"
-        );
-        let new_moov = patched;
-        let mut out = Vec::with_capacity(prefix_len + new_moov.len() + samples.len());
-        for box_ in &top {
-            out.extend_from_slice(&box_.to_bytes());
-        }
-        out.extend_from_slice(&new_moov);
-        out.extend_from_slice(&samples);
-        let delta = out.len() as i64 - original.len() as i64;
-        std::fs::write(path, &out)?;
-        return Ok(WriteOutcome::Written {
-            delta,
-            in_place: true,
-        });
     }
+    let patched = moov.to_bytes();
+    debug_assert_eq!(
+        patched.len(),
+        new_moov.len(),
+        "only the offset value changed"
+    );
 
-    let mut out = Vec::with_capacity(prefix_len + new_moov.len());
+    let mut out = Vec::with_capacity(prefix_len + patched.len() + free_payload_len + 8);
     for box_ in &top {
         out.extend_from_slice(&box_.to_bytes());
     }
-    out.extend_from_slice(&new_moov);
+    out.extend_from_slice(&patched);
+    if !samples.is_empty() {
+        // A `free` box holding the samples, padded so the next edit can reuse it in place.
+        out.extend_from_slice(&((8 + free_payload_len) as u32).to_be_bytes());
+        out.extend_from_slice(b"free");
+        out.extend_from_slice(&samples);
+        out.extend(std::iter::repeat_n(0u8, SAMPLE_PADDING));
+    }
 
     let delta = out.len() as i64 - original.len() as i64;
     std::fs::write(path, &out)?;
 
     Ok(WriteOutcome::Written {
         delta,
+        // The audio is before the moov, so it cannot have moved.
         in_place: true,
     })
 }
+
+/// Padding inside the sample `free` box, so the next edit reuses it in place.
+const SAMPLE_PADDING: usize = 256;
 
 /// Rebuild the QuickTime chapter track inside `moov` to carry `chapters`.
 ///
@@ -250,8 +263,6 @@ fn rebuild_chapter_track(
         let remaining = file_duration_ms.saturating_sub(last.start_ms);
         deltas.push(ticks(remaining));
     }
-    // A chapter list whose last entry is at or past the end of the file still needs a
-    // duration: zero would make the sample vanish from the timeline.
     if deltas.is_empty() && !chapters.is_empty() {
         deltas.push(ticks(file_duration_ms));
     }
@@ -271,10 +282,9 @@ fn rebuild_chapter_track(
     let stts_payload: Vec<u8> = {
         let mut v = vec![0u8, 0, 0, 0]; // version 0, no flags
         v.extend_from_slice(&(deltas.len() as u32).to_be_bytes());
-        for (i, delta) in deltas.iter().enumerate() {
+        for delta in &deltas {
             v.extend_from_slice(&(chapters.len() as u32).to_be_bytes());
             v.extend_from_slice(&(*delta as u32).to_be_bytes());
-            let _ = i;
         }
         v
     };
@@ -287,8 +297,8 @@ fn rebuild_chapter_track(
         }
         v
     };
+    // One chunk holding every sample, because the samples are appended as one run.
     let stsc_payload: Vec<u8> = {
-        // One chunk holding every sample, because the samples are appended as one run.
         let mut v = vec![0u8, 0, 0, 0];
         v.extend_from_slice(&1u32.to_be_bytes()); // entry count
         v.extend_from_slice(&1u32.to_be_bytes()); // first chunk
@@ -300,7 +310,7 @@ fn rebuild_chapter_track(
     let stco_payload: Vec<u8> = {
         let mut v = vec![0u8, 0, 0, 0];
         v.extend_from_slice(&1u32.to_be_bytes()); // entry count
-        v.extend_from_slice(&0u64.to_be_bytes()[..4]); // offset, patched below
+        v.extend_from_slice(&0u32.to_be_bytes()); // offset, patched below
         v
     };
 
@@ -314,7 +324,7 @@ fn rebuild_chapter_track(
 
     // The track runs as long as its samples do.
     let track_ticks: u64 = deltas.iter().sum();
-    set_durations(mdia, track_ticks);
+    set_mdhd_duration(mdia, track_ticks);
 
     Ok(())
 }
@@ -327,27 +337,26 @@ fn mdhd_timescale(payload: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes([ts[0], ts[1], ts[2], ts[3]]))
 }
 
-/// Set the `mdhd` and `tkhd` durations to `ticks`, in their own timescales.
-fn set_durations(mdia: &mut Box_, ticks: u64) {
-    // mdhd: version (1) + flags (3) + creation (4) + modification (4) + timescale (4).
-    for child in &mut mdia.children {
-        if child.box_type == *b"mdhd" {
-            let version = child.payload.first().copied().unwrap_or(0);
-            let duration_at = if version == 0 { 16 } else { 24 };
-            let end = duration_at + if version == 0 { 4 } else { 8 };
-            if child.payload.len() >= end {
-                let bytes = if version == 0 {
-                    (ticks as u32).to_be_bytes().to_vec()
-                } else {
-                    ticks.to_be_bytes().to_vec()
-                };
-                child.payload[duration_at..end].copy_from_slice(&bytes);
-            }
-        }
+/// Set the `mdhd` duration to `ticks`, in the track's own timescale.
+///
+/// The `tkhd` duration is left alone on purpose: it is in the *movie* timescale, and
+/// scaling it wrongly would be worse than leaving a field players barely consult.
+fn set_mdhd_duration(mdia: &mut Box_, ticks: u64) {
+    let Some(mdhd) = mdia.children.iter_mut().find(|c| c.box_type == *b"mdhd") else {
+        return;
+    };
+    let version = mdhd.payload.first().copied().unwrap_or(0);
+    let duration_at = if version == 0 { 16 } else { 24 };
+    let width = if version == 0 { 4 } else { 8 };
+    let end = duration_at + width;
+    if mdhd.payload.len() >= end {
+        let bytes = if version == 0 {
+            (ticks as u32).to_be_bytes().to_vec()
+        } else {
+            ticks.to_be_bytes().to_vec()
+        };
+        mdhd.payload[duration_at..end].copy_from_slice(&bytes);
     }
-    // tkhd is a sibling of mdia, in the trak, and is in the *movie* timescale; left alone
-    // rather than wrongly scaled, because a player that uses it at all is comparing it
-    // against the movie duration, not the track's.
 }
 
 /// Patch the chapter track's `stco` to point at `offset`.
@@ -364,7 +373,7 @@ fn patch_chapter_stco(moov: &mut Box_, offset: u64) -> Result<(), std::io::Error
     }) else {
         return Err(std::io::Error::other("no text track to patch"));
     };
-    let Some(stco) = trak
+    let stco = trak
         .children
         .iter_mut()
         .find(|c| c.box_type == *b"mdia")
@@ -378,8 +387,8 @@ fn patch_chapter_stco(moov: &mut Box_, offset: u64) -> Result<(), std::io::Error
                         .find(|c| c.box_type == *b"stbl")
                         .and_then(|stbl| stbl.children.iter_mut().find(|c| c.box_type == *b"stco"))
                 })
-        })
-    else {
+        });
+    let Some(stco) = stco else {
         return Err(std::io::Error::other("no stco in the text track"));
     };
     // stco payload: version (1) + flags (3) + entry count (4) + the offset (4) = 12.
@@ -394,8 +403,8 @@ fn patch_chapter_stco(moov: &mut Box_, offset: u64) -> Result<(), std::io::Error
 
 /// The concatenated chapter samples: a length prefix, the title, and the `encd` box.
 ///
-/// The `encd` box is what ffmpeg appends to every chapter sample, byte for byte; the
-/// length prefix counts the title only, so a sample is `2 + title + 12` bytes.
+/// The `encd` box is what ffmpeg appends to every chapter sample, byte for byte; the length
+/// prefix counts the title only, so a sample is `2 + title + 12` bytes.
 fn chapter_sample_data(chapters: &[FileChapter]) -> Vec<u8> {
     const ENCD: &[u8] = &[
         0x00, 0x00, 0x00, 0x0C, b'e', b'n', b'c', b'd', 0x00, 0x00, 0x01, 0x00,
@@ -594,23 +603,27 @@ mod tests {
     }
 
     #[test]
-    fn a_moov_that_is_not_last_is_declined_rather_than_corrupted() {
-        // A `free` box after moov means moov is not last, and growing it would shift that
-        // box. Declined, with the file untouched, because the alternative is invalidating
-        // every chunk offset in the file.
-        let mut with_free = Vec::new();
-        with_free.extend_from_slice(&28u32.to_be_bytes());
-        with_free.extend_from_slice(b"ftypM4A ");
-        with_free.extend_from_slice(&[0, 0, 2, 0]);
-        with_free.extend_from_slice(b"M4A mp42isom");
-        with_free.extend_from_slice(&64u32.to_be_bytes());
-        with_free.extend_from_slice(b"mdat");
-        with_free.extend_from_slice(&[0xAA; 56]);
+    fn a_box_that_cannot_be_disposed_of_after_the_moov_is_declined() {
+        // A trailing `free` box is disposable, so a file with one is writable. A trailing
+        // `meta` is not: growing the moov would shift it, and `meta` may be referenced by
+        // anything. Declined, with the file untouched, because the alternative is
+        // invalidating every chunk offset in the file at once.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&28u32.to_be_bytes());
+        bytes.extend_from_slice(b"ftypM4A ");
+        bytes.extend_from_slice(&[0, 0, 2, 0]);
+        bytes.extend_from_slice(b"M4A mp42isom");
+        bytes.extend_from_slice(&64u32.to_be_bytes());
+        bytes.extend_from_slice(b"mdat");
+        bytes.extend_from_slice(&[0xAA; 56]);
         let moov = mp4_core::container(*b"moov", vec![]);
-        with_free.extend_from_slice(&moov.to_bytes());
-        with_free.extend_from_slice(b"\x00\x00\x00\x08free");
+        bytes.extend_from_slice(&moov.to_bytes());
+        // A `meta` is a real box with content, which cannot be assumed disposable.
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(b"meta");
+        bytes.extend_from_slice(&[0u8; 12]);
 
-        let file = TempFile::new("notlast", &with_free);
+        let file = TempFile::new("notlast", &bytes);
         let outcome = write_m4b_chapters(file.path(), &chapters()).expect("declines");
         assert_eq!(
             outcome,
@@ -620,7 +633,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(file.path()).expect("read"),
-            with_free,
+            bytes,
             "and the file is untouched"
         );
     }

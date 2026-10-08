@@ -318,3 +318,55 @@ fn a_track_only_chapter_list_is_rebuilt_into_a_working_track() {
         "and ffprobe sees the new ones, from the rebuilt track: {titles:?}"
     );
 }
+
+#[test]
+fn repeated_edits_do_not_accumulate_dead_sample_blobs() {
+    if !tools_available() {
+        eprintln!("SKIPPED: ffmpeg/ffprobe not on PATH");
+        return;
+    }
+    // The chapter samples live in a `free` box after the moov, and every edit replaces that
+    // box. If an edit appended a fresh one instead of replacing it, the file would grow by
+    // the old blob on every pass and nothing would ever shrink it.
+    //
+    // The check is two *identical* edits at the end, compared to each other: a length that
+    // changes between them is dead data accumulating, and that holds regardless of how the
+    // earlier edits varied. Comparing across edits with different chapter counts would be
+    // wrong, because a longer list legitimately takes more space.
+    let file = TempM4b::with_chapters("stable", 20, &[(0, "First")]);
+
+    // A history of varying edits, each with a different chapter count and title length.
+    for round in 1..=6u32 {
+        let chapters: Vec<FileChapter> = (0..round)
+            .map(|i| {
+                FileChapter::new(
+                    &format!("Chapter {i} of edit {round}"),
+                    u64::from(i) * 3_000,
+                    u64::from(i + 1) * 3_000,
+                )
+            })
+            .collect();
+        write_m4b_chapters(file.path(), &chapters).expect("writes");
+    }
+
+    let final_chapters = vec![
+        FileChapter::new("Alpha", 0, 7_000),
+        FileChapter::new("Beta", 7_000, 14_000),
+        FileChapter::new("Gamma", 14_000, 20_000),
+    ];
+    write_m4b_chapters(file.path(), &final_chapters).expect("first of the pair");
+    let after_first = std::fs::read(file.path()).expect("read").len();
+    write_m4b_chapters(file.path(), &final_chapters).expect("second of the pair");
+    let after_second = std::fs::read(file.path()).expect("read").len();
+
+    assert_eq!(
+        after_first, after_second,
+        "two identical writes must leave the file the same length: {after_first} became \
+         {after_second}, so dead sample blobs are accumulating"
+    );
+    assert_eq!(
+        duration_ms(file.path()),
+        20_000,
+        "and it still plays correctly"
+    );
+}
