@@ -15,8 +15,16 @@ name = "audiobook-shelf"
 version = "0.1.0"
 dependencies = [
  "audiobook-core",
+ "cuesheet-core",
  "id3-core",
  "mp4-core",
+]
+
+[[package]]
+name = "cuesheet-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

@@ -235,23 +235,68 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
     let starts: Vec<(u64, String)> = if let Some(sidecar_path) = spec.strip_prefix('@') {
         let text = std::fs::read_to_string(sidecar_path)
             .map_err(|e| format!("cannot read {sidecar_path}: {e}"))?;
-        let parsed =
-            audiobook_core::sidecar::parse(&text).map_err(|e| format!("{sidecar_path}: {e}"))?;
-        if parsed.chapters.is_empty() {
-            return Err(format!("{sidecar_path}: no chapters in it"));
-        }
-        if parsed.has_warnings() {
-            // The sidecar reader reports files a human edited and got nearly right. A
-            // silent pass here writes those files' defects into audio.
-            for warning in &parsed.warnings {
-                eprintln!("warning: {warning:?}");
+        // A `.cue` is the chapter list a CD rip already ships with, and is tried first
+        // because its grammar is stricter than the sidecars': a file that parses as a cue
+        // sheet is one, and a sidecar parser reading cue lines would report a `TRACK`
+        // line as junk rather than as a track.
+        let cue_chapters = match cuesheet_core::Sheet::parse(&text) {
+            Ok(sheet) if !sheet.files.is_empty() => Some(sheet),
+            Ok(_) => None,
+            Err(cuesheet_core::CueError::UnknownCommand { .. }) => None,
+            Err(e) => return Err(format!("{sidecar_path}: {e}")),
+        };
+        if let Some(chapters) = cue_chapters.map(|sheet| {
+            // The sheet's times are relative to *its own file*, so a multi-file sheet
+            // needs each file's duration to become book-relative. Durations come from
+            // the audio itself, resolved next to the sheet, because that is where a rip
+            // puts it; a file that cannot be probed contributes a zero, which is wrong
+            // in a way the printed chapter times make visible rather than silent.
+            let base = std::path::Path::new(sidecar_path)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let durations: Vec<Option<u64>> = sheet
+                .files
+                .iter()
+                .map(|f| {
+                    FileReader::open(&base.join(&f.path))
+                        .ok()
+                        .and_then(|mut r| {
+                            audiobook_core::MediaProbe::probe_source(&mut r).duration_ms
+                        })
+                })
+                .collect();
+            sheet
+                .chapter_starts_book_relative(&durations)
+                .into_iter()
+                .map(|(ms, title)| (ms, title.unwrap_or_default()))
+                .collect::<Vec<_>>()
+        }) {
+            if chapters.is_empty() {
+                return Err(format!(
+                    "{sidecar_path}: the cue sheet has no INDEX 01 lines"
+                ));
             }
+            chapters
+        } else {
+            let parsed = audiobook_core::sidecar::parse(&text)
+                .map_err(|e| format!("{sidecar_path}: {e}"))?;
+            if parsed.chapters.is_empty() {
+                return Err(format!("{sidecar_path}: no chapters in it"));
+            }
+            if parsed.has_warnings() {
+                // The sidecar reader reports files a human edited and got nearly right. A
+                // silent pass here writes those files' defects into audio.
+                for warning in &parsed.warnings {
+                    eprintln!("warning: {warning:?}");
+                }
+            }
+            parsed
+                .chapters
+                .iter()
+                .map(|c| (c.start_ms, c.title.clone()))
+                .collect()
         }
-        parsed
-            .chapters
-            .iter()
-            .map(|c| (c.start_ms, c.title.clone()))
-            .collect()
     } else {
         spec.split(';')
             .filter(|line| !line.trim().is_empty())

@@ -357,6 +357,34 @@ All found by running the tool against a real library, which is how these show up
   Found by muxing a `+faststart` file and running the tool on it, which is the ordinary
   way to meet this shape, rather than by reading the code.
 
+### Added
+
+- **`--write @book.cue` applies a CD rip's own cue sheet.** A rip is one long audio file
+  and a `.cue` listing its tracks — which *is* the book's chapter list, already written by
+  the ripping software. A spec naming a file that parses as a cue sheet is read as one,
+  tried before the looser sidecar grammars because a cue sheet's grammar is the stricter
+  one; its `INDEX 01` times become the book's chapters, and multi-file sheets (one file
+  per disc) are made book-relative from each file's own probed duration.
+
+  This closes the estate's oldest named gap: CD rips are a top audiobook source, and
+  until now their chapter lists were unreadable here.
+
+### Verified
+
+- **A cue sheet's times survive into an M4B and come back out of ffprobe as the same
+  milliseconds**, in `tests/cue_end_to_end.rs`. The frames field is where a misread hides:
+  `INDEX 01 00:15:30` is fifteen seconds and thirty *frames* — 15.4 s, not 15.5 — because
+  CD sectors run at 75 to the second, and a reader that took the field for hundredths puts
+  that chapter a hundred milliseconds late. No independent cue-sheet implementation exists
+  on this machine, so the sheet grammar is verified by `cuesheet-core` alone and recorded
+  as such there; the times, which are what a chapter list is for, are verified here
+  against ffmpeg's reader.
+
+  The first manual run of this pipeline was itself the demonstration: the fixture wrote
+  `00:00:15` meaning fifteen seconds, and ffprobe reported a chapter at 0.200000 — fifteen
+  *frames*, exactly as the format defines it. The pipeline was exact; the fixture was the
+  trap.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

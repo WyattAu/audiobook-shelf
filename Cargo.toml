@@ -29,6 +29,7 @@ publish = false
 # on `fix/id3-chapters` and `fix/id3-v23-tags` rather than `main` until those are merged,
 # so a clone against `main` will not satisfy them.
 audiobook-core = { version = "0.5", path = "../audiobook-core" }
+cuesheet-core = { version = "0.1", path = "../cuesheet-core" }
 id3-core = { version = "0.3", path = "../id3-core" }
 mp4-core = { version = "0.3", path = "../mp4-core" }
 
