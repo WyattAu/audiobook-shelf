@@ -90,8 +90,10 @@ pub fn write_m4b_chapters(
     // the alternative is invalidating every chunk offset in the file at once.
     let trailing: Vec<&Box_> = top[moov_index + 1..].iter().collect();
     if trailing.iter().any(|b| b.box_type != *b"free") {
+        // Named, because `+faststart` files are common enough that "not a container this
+        // can edit" would send the user away with no idea that the fix is one command.
         return Ok(WriteOutcome::Unchanged {
-            reason: UnchangedReason::UnsupportedContainer,
+            reason: UnchangedReason::MoovNotLast,
         });
     }
 
@@ -632,7 +634,7 @@ mod tests {
         assert_eq!(
             outcome,
             WriteOutcome::Unchanged {
-                reason: UnchangedReason::UnsupportedContainer
+                reason: UnchangedReason::MoovNotLast
             }
         );
         assert_eq!(

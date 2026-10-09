@@ -345,6 +345,18 @@ All found by running the tool against a real library, which is how these show up
 - **`examples/probe_cost`**, which times both paths on the same files and prints the
   bytes each touched.
 
+### Changed
+
+- **A file whose `moov` is not last is declined with the reason and the remedy, not "not
+  a container this can edit".** An M4B muxed with `+faststart` has its metadata first, and
+  growing it would move the audio underneath every chunk offset in the file at once — so
+  the decline is correct, but a decline that names no cause and no next step is a message
+  nobody can act on. It now says what is wrong and the one-line re-mux that fixes it, and
+  notes that ffmpeg writes `moov` last by default — `+faststart` is what puts it first.
+
+  Found by muxing a `+faststart` file and running the tool on it, which is the ordinary
+  way to meet this shape, rather than by reading the code.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

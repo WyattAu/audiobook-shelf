@@ -106,6 +106,15 @@ pub enum UnchangedReason {
     AlreadyCorrect,
     /// The file is not a shape this module can edit.
     UnsupportedContainer,
+    /// The `moov` box is not the last box, so growing it would shift everything after it.
+    ///
+    /// This is the one shape where an in-place edit is not merely difficult but
+    /// destructive: an M4B muxed with `+faststart` has its metadata *first*, and growing
+    /// it would move the audio underneath every chunk offset in the file at once. The
+    /// remedy is a re-mux, which is a one-line ffmpeg command and loses nothing — so the
+    /// message names it rather than leaving the user with "not a container this can edit"
+    /// and no next step.
+    MoovNotLast,
     /// The new tag would not fit, and no padding can be reclaimed.
     TooLarge,
     /// The file carries a QuickTime chapter track alongside the `chpl` box, and the track
@@ -126,6 +135,12 @@ impl std::fmt::Display for UnchangedReason {
             UnchangedReason::TooLarge => {
                 f.write_str("the chapters would not fit and no padding can be reclaimed")
             }
+            UnchangedReason::MoovNotLast => f.write_str(
+                // One line, on purpose: a string literal's continuation writes its
+                // indentation into the output, and a remedy that arrives wrapped into
+                // fragments is a remedy nobody can run.
+                "the moov box is not the last box, so growing it would shift the audio and invalidate every chunk offset; re-mux with: ffmpeg -i FILE -c copy OUT (ffmpeg writes moov last by default; +faststart is what puts it first)",
+            ),
             UnchangedReason::ChapterTrackNotWritable => f.write_str(
                 "this file carries a QuickTime chapter track, which players read in \
                  preference to the chpl box this would write, so the edit would not be \
