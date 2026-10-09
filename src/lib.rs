@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod fs_reader;
 pub mod layout;
 pub mod m4b;
 pub mod naming;

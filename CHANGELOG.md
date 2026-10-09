@@ -314,6 +314,37 @@ All found by running the tool against a real library, which is how these show up
   rather than the count: all four landed exactly, which is only possible because ffprobe
   truncates. A stricter player would have refused the track.
 
+### Changed
+
+- **A library is listed without reading it.** Every probe went through `std::fs::read`,
+  which is the whole file: listing a library read every byte of every book to learn what
+  its first kilobyte says. The scan, the duration pass and `--export` all now probe
+  through bounded reads — the tag at its own declared size, one frame of audio, and for
+  an MP4 a walk of top-level box *headers* plus the `moov` and one read per chapter
+  sample.
+
+  Measured rather than asserted, on a 10 MB MP3: 10,146,250 bytes read whole against
+  20,524 windowed, a 494-fold difference in I/O — and I/O, not CPU time, is what a
+  listing costs on a cold cache or a network mount, where the whole-file path reads every
+  byte from disk. A 233 MB eight-book library lists in 2.6 ms with a peak RSS of 11.7 MB,
+  because the listing never holds a book.
+
+  The first measurement printed here was wrong, and it is recorded because the way it was
+  wrong is instructive: it started its clock *after* `std::fs::read`, timed the whole-file
+  path without the read that is its entire cost, and briefly showed the windowed path as
+  the slower one. Both paths are now timed from open to probe, both report the bytes they
+  touched, and the example asserts the two agree before it prints anything — so a fast
+  wrong answer cannot masquerade as a win.
+
+### Added
+
+- **`fs_reader::FileReader`**, the disk half of `mp4_core::ByteReader`: seek and fill,
+  looping because a single read may return short for reasons that have nothing to do with
+  the end of the file. A short read at the end is the normal case and is what stops the
+  loop, not an error.
+- **`examples/probe_cost`**, which times both paths on the same files and prints the
+  bytes each touched.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

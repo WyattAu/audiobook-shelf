@@ -272,8 +272,11 @@ pub fn read(book: &Book) -> (Option<Title>, Vec<Finding>) {
     let mut parts: Vec<ReadPart> = Vec::new();
 
     for file in &book.files {
-        let bytes = match std::fs::read(&file.path) {
-            Ok(b) => b,
+        // Bounded reads: a probe needs a file's header, not its gigabytes. A library
+        // listing that reads every byte of every book is a listing that takes minutes
+        // on the libraries this tool exists for.
+        let probe = match crate::fs_reader::FileReader::open(&file.path) {
+            Ok(mut reader) => MediaProbe::probe_source(&mut reader),
             Err(e) => {
                 findings.push(Finding::Unreadable {
                     path: file.path.clone(),
@@ -282,7 +285,6 @@ pub fn read(book: &Book) -> (Option<Title>, Vec<Finding>) {
                 continue;
             }
         };
-        let probe = MediaProbe::probe(&bytes);
         // No container signature at all is a real finding: a file called `.mp3` that is
         // not one is how an HTML error page from a failed download ends up in a library,
         // and it plays as silence in every player.

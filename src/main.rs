@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use audiobook_shelf::fs_reader::FileReader;
 use audiobook_shelf::naming::ParseOptions;
 use audiobook_shelf::scan::{self, Finding};
 
@@ -174,9 +175,9 @@ fn export(root: &std::path::Path, format: &str, dry_run: bool) -> Result<ExitCod
         let mut chapters = SidecarChapters::default();
         let mut offset = 0u64;
         for file in &book.files {
-            let bytes =
-                std::fs::read(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
-            let probe = audiobook_core::MediaProbe::probe(&bytes);
+            let mut reader = FileReader::open(&file.path)
+                .map_err(|e| format!("{}: {e}", file.path.display()))?;
+            let probe = audiobook_core::MediaProbe::probe_source(&mut reader);
             for (start_ms, title) in &probe.chapters {
                 chapters.chapters.push(audiobook_core::Chapter::new(
                     title,
