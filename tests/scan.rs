@@ -424,3 +424,82 @@ fn a_series_folder_holding_discs_still_names_the_series() {
     assert_eq!(books[0].series.as_deref(), Some("Sword of Truth"));
     assert_eq!(books[0].files.len(), 2);
 }
+
+#[test]
+fn a_cue_sheet_naming_missing_audio_is_a_finding() {
+    // A rip's `.cue` is its chapter list. A sheet naming audio that has been moved or
+    // deleted is a book whose chapters cannot be applied or exported, and a library
+    // report is where that should be named - not the moment someone finally tries.
+    let tree = TempTree::new("cuegone");
+    tree.write("Rip/book.mp3", &fake_mp3());
+    tree.write(
+        "Rip/book.cue",
+        b"FILE \"book.mp3\" MP3\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 05:00:00\n",
+    );
+    tree.write(
+        "Rip/gone.cue",
+        b"FILE \"deleted.mp3\" MP3\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
+    );
+
+    let books = scan(&tree);
+    assert_eq!(books.len(), 1);
+    let findings = audiobook_shelf::scan::check_layout(&books[0]);
+    let cue_finding = findings
+        .iter()
+        .find(|f| matches!(f, Finding::CueNamesMissingFile { .. }))
+        .expect("the broken sheet is named");
+    let Finding::CueNamesMissingFile { sheet, missing, .. } = cue_finding else {
+        unreachable!()
+    };
+    assert!(sheet.ends_with("gone.cue"), "{sheet:?}");
+    assert_eq!(missing, &["deleted.mp3".to_string()]);
+    // And the good sheet is not named: one defect, one finding.
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|f| matches!(f, Finding::CueNamesMissingFile { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_unparsable_cue_sheet_is_a_finding_with_the_reason() {
+    let tree = TempTree::new("cuejunk");
+    tree.write("Rip/book.mp3", &fake_mp3());
+    tree.write(
+        "Rip/junk.cue",
+        b"FILE \"book.mp3\" MP3\n  NOT_A_CUE_COMMAND x\n",
+    );
+
+    let books = scan(&tree);
+    let findings = audiobook_shelf::scan::check_layout(&books[0]);
+    let Finding::UnparsableCue { sheet, detail } = findings
+        .iter()
+        .find(|f| matches!(f, Finding::UnparsableCue { .. }))
+        .expect("the junk sheet is named")
+    else {
+        unreachable!()
+    };
+    assert!(sheet.ends_with("junk.cue"));
+    assert!(detail.contains("NOT_A_CUE_COMMAND"), "{detail}");
+}
+
+#[test]
+fn a_cue_sheet_whose_audio_is_present_is_no_finding() {
+    let tree = TempTree::new("cueok");
+    tree.write("Rip/book.mp3", &fake_mp3());
+    tree.write(
+        "Rip/book.cue",
+        b"FILE \"book.mp3\" MP3\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
+    );
+    let books = scan(&tree);
+    let findings = audiobook_shelf::scan::check_layout(&books[0]);
+    assert!(
+        !findings.iter().any(|f| matches!(
+            f,
+            Finding::CueNamesMissingFile { .. } | Finding::UnparsableCue { .. }
+        )),
+        "a sound rip is not a defect: {findings:?}"
+    );
+}

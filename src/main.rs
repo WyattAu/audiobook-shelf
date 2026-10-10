@@ -98,6 +98,39 @@ fn main() -> ExitCode {
             if let Some(series) = &book.series {
                 println!("    [{series}]");
             }
+            // A rip's cue sheet is its chapter list, and naming it — with how many
+            // tracks — is how a user knows the book's chapters are one edit away.
+            if let Ok(entries) = std::fs::read_dir(&book.folder) {
+                let mut sheets: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.eq_ignore_ascii_case("cue"))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                sheets.sort();
+                for sheet in sheets {
+                    match std::fs::read_to_string(&sheet)
+                        .map_err(|e| e.to_string())
+                        .and_then(|t| cuesheet_core::Sheet::parse(&t).map_err(|e| e.to_string()))
+                    {
+                        Ok(parsed) => {
+                            let tracks: usize = parsed.files.iter().map(|f| f.tracks.len()).sum();
+                            println!(
+                                "    [{tracks} track(s) from chapters: {}]",
+                                sheet
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default()
+                            );
+                        }
+                        Err(e) => println!("    [cue sheet unreadable: {e}]"),
+                    }
+                }
+            }
             let label = if book.name.title.is_empty() {
                 book.folder
                     .file_name()
@@ -566,6 +599,20 @@ fn describe(finding: &Finding) -> String {
         }
         Finding::Inconsistent { folder, detail } => {
             format!("{}: {detail}", folder.display())
+        }
+        Finding::CueNamesMissingFile {
+            folder,
+            sheet,
+            missing,
+        } => format!(
+            "{}: {} names audio this folder does not have: {} — the rip is broken, \
+             and the sheet is the book's chapter list",
+            folder.display(),
+            sheet.display(),
+            missing.join(", ")
+        ),
+        Finding::UnparsableCue { sheet, detail } => {
+            format!("{}: {detail}", sheet.display())
         }
         // `Finding` is `#[non_exhaustive]`, so a new variant cannot silently vanish. It
         // prints as unknown rather than being dropped, because an unrecognised finding

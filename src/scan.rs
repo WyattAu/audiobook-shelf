@@ -74,6 +74,27 @@ pub enum Finding {
         /// Its complaint.
         detail: String,
     },
+    /// A cue sheet naming an audio file the folder does not have.
+    ///
+    /// This is a broken rip, and it is worth its own finding rather than a silent
+    /// shrug: the sheet is the book's chapter list, and a sheet whose audio is gone is
+    /// a book whose chapters cannot be applied or exported. The missing names come
+    /// along so the report can list them.
+    CueNamesMissingFile {
+        /// The book folder.
+        folder: PathBuf,
+        /// The sheet.
+        sheet: PathBuf,
+        /// The file names the sheet names that are not in the folder.
+        missing: Vec<String>,
+    },
+    /// A cue sheet this crate could not parse.
+    UnparsableCue {
+        /// The sheet.
+        sheet: PathBuf,
+        /// Why.
+        detail: String,
+    },
 }
 
 impl Finding {
@@ -83,10 +104,13 @@ impl Finding {
         match self {
             Finding::EmptyBook { folder }
             | Finding::NoTitle { folder, .. }
+            | Finding::CueNamesMissingFile { folder, .. }
             | Finding::MissingTracks { folder, .. }
             | Finding::DuplicateTrack { folder, .. }
             | Finding::Inconsistent { folder, .. } => folder,
-            Finding::Unreadable { path, .. } | Finding::LooseFile { path } => path,
+            Finding::UnparsableCue { sheet, .. }
+            | Finding::Unreadable { path: sheet, .. }
+            | Finding::LooseFile { path: sheet } => sheet,
         }
     }
 }
@@ -257,6 +281,65 @@ pub fn check_layout(book: &Book) -> Vec<Finding> {
             folder: folder.clone(),
             tracks: duplicates,
         });
+    }
+    findings.extend(check_cue_sheets(&folder));
+    findings
+}
+
+/// Check the cue sheets a book folder holds: each must parse, and each must name audio
+/// the folder actually has.
+///
+/// A rip's `.cue` is its chapter list, so a sheet that is broken — or that names audio
+/// which has been moved or deleted — is a book whose chapters cannot be applied or
+/// exported. Found here rather than at write time because a library report is where a
+/// broken rip should be named, not the moment someone finally tries to fix its chapters.
+fn check_cue_sheets(folder: &Path) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return findings;
+    };
+    let mut sheets: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("cue"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    sheets.sort();
+    for sheet in sheets {
+        let Ok(text) = std::fs::read_to_string(&sheet) else {
+            findings.push(Finding::UnparsableCue {
+                sheet: sheet.clone(),
+                detail: "cannot be read as text".to_string(),
+            });
+            continue;
+        };
+        match cuesheet_core::Sheet::parse(&text) {
+            Ok(parsed) => {
+                let missing: Vec<String> = parsed
+                    .files
+                    .iter()
+                    .map(|f| &f.path)
+                    .filter(|name| !folder.join(name).is_file())
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    findings.push(Finding::CueNamesMissingFile {
+                        folder: folder.to_path_buf(),
+                        sheet: sheet.clone(),
+                        missing,
+                    });
+                }
+            }
+            Err(e) => findings.push(Finding::UnparsableCue {
+                sheet: sheet.clone(),
+                detail: e.to_string(),
+            }),
+        }
     }
     findings
 }

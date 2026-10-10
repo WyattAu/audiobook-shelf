@@ -119,6 +119,26 @@ All found by running the tool against a real library, which is how these show up
   seconds and putting every chapter sixty times further into the book than asked, with no
   error to say so.
 
+### Added
+
+- **The scan reads a book's cue sheets, and names a broken rip where a library report
+  should.** Two findings: a sheet naming audio the folder does not have (the rip is
+  broken, and the sheet is the book's chapter list — the missing names come along), and a
+  sheet that cannot be parsed (with the parser's reason and line). Both are checked at
+  scan time rather than write time, because a broken rip should be named the moment the
+  library is looked at, not the moment someone finally tries to fix its chapters.
+
+  The listing shows what a rip ships with: `[2 track(s) from chapters: book.cue]`, so a
+  user can see the book's chapters are one edit away. A sheet that will not parse shows
+  the reason rather than being silently ignored.
+
+### Changed
+
+- **`--export cue` refuses a multi-file book with the reason and the alternative.** A cue
+  sheet's times are relative to the one audio file its `FILE` line names, so a book of
+  several files has no honest cue-sheet form. The refusal names `ffmetadata`, whose times
+  are book-relative and which is what a multi-file book wants.
+
 ### Verified
 
 - **The library view is checked against ffprobe, file relationships included.** The
@@ -368,6 +388,26 @@ All found by running the tool against a real library, which is how these show up
 
   This closes the estate's oldest named gap: CD rips are a top audiobook source, and
   until now their chapter lists were unreadable here.
+
+### Added
+
+- **The scan reads a book's cue sheets, and names a broken rip where a library report
+  should.** Two findings: a sheet naming audio the folder does not have (the rip is
+  broken, and the sheet is the book's chapter list — the missing names come along), and a
+  sheet that cannot be parsed (with the parser's reason and line). Both are checked at
+  scan time rather than write time, because a broken rip should be named the moment the
+  library is looked at, not the moment someone finally tries to fix its chapters.
+
+  The listing shows what a rip ships with: `[2 track(s) from chapters: book.cue]`, so a
+  user can see the book's chapters are one edit away. A sheet that will not parse shows
+  the reason rather than being silently ignored.
+
+### Changed
+
+- **`--export cue` refuses a multi-file book with the reason and the alternative.** A cue
+  sheet's times are relative to the one audio file its `FILE` line names, so a book of
+  several files has no honest cue-sheet form. The refusal names `ffmetadata`, whose times
+  are book-relative and which is what a multi-file book wants.
 
 ### Verified
 
