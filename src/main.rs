@@ -175,21 +175,16 @@ fn main() -> ExitCode {
 }
 
 /// Export every book's chapters as a sidecar next to its audio.
-///
-/// One file per book, named for the format, which is the half of the chapter workflow that
-/// is not writing: get the chapters out, edit them somewhere human, and put them back with
-/// `--write @`. The formats are the ones the estate reads, so an exported file round-trips.
-#[allow(clippy::expect_used, clippy::panic)]
 fn export(root: &std::path::Path, format: &str, dry_run: bool) -> Result<ExitCode, String> {
-    use audiobook_core::sidecar::SidecarChapters;
-    use audiobook_shelf::naming::ParseOptions;
+    use audiobook_shelf::export::{render_sidecar, SidecarFormat};
 
-    if format != "ffmetadata" && format != "chapterx" && format != "timecode" && format != "cue" {
+    let Some(format) = SidecarFormat::named(format) else {
+        let names: Vec<&str> = SidecarFormat::all().iter().map(|f| f.name()).collect();
         return Err(format!(
-            "unknown sidecar format `{format}`; expected ffmetadata, chapterx, timecode \
-             or cue"
+            "unknown sidecar format `{format}`; expected {}",
+            names.join(", ")
         ));
-    }
+    };
 
     let books = audiobook_shelf::scan::scan(root, ParseOptions::default())
         .map_err(|_| format!("cannot read {}", root.display()))?;
@@ -198,92 +193,13 @@ fn export(root: &std::path::Path, format: &str, dry_run: bool) -> Result<ExitCod
         if book.files.is_empty() {
             continue;
         }
-        // Book-relative times, which is what a sidecar means and what `--write @` expects
-        // to read back.
-        let mut chapters = SidecarChapters::default();
-        let mut offset = 0u64;
-        for file in &book.files {
-            let mut reader = FileReader::open(&file.path)
-                .map_err(|e| format!("{}: {e}", file.path.display()))?;
-            let probe = audiobook_core::MediaProbe::probe_source(&mut reader);
-            for (start_ms, title) in &probe.chapters {
-                chapters.chapters.push(audiobook_core::Chapter::new(
-                    title,
-                    offset.saturating_add(*start_ms),
-                    0,
-                ));
-            }
-            offset = offset.saturating_add(probe.duration_ms.unwrap_or(0));
-        }
-
-        let extension = match format {
-            "ffmetadata" => "ffmeta.txt",
-            "chapterx" => "chap.txt",
-            "timecode" => "timecodes.txt",
-            _ => "cue",
-        };
-        let text = match format {
-            "ffmetadata" => chapters.to_ffmetadata(),
-            "chapterx" => chapters.to_chapter_x(),
-            "timecode" => chapters.to_timecode(),
-            // A cue sheet names one audio file, and its times are relative to that file
-            // alone — so a book of several files has no honest cue-sheet form, and the
-            // refusal names the formats that do rather than writing a broken one.
-            _ => {
-                if book.files.len() > 1 {
-                    return Err(format!(
-                        "{}: a cue sheet's times are relative to one audio file and this \
-                         book has {} — export ffmetadata instead",
-                        book.folder.display(),
-                        book.files.len()
-                    ));
-                }
-                let audio = book
-                    .files
-                    .first()
-                    .map(|f| {
-                        f.path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default();
-                let mut sheet = cuesheet_core::Sheet {
-                    title: Some(book.name.title.clone()),
-                    ..cuesheet_core::Sheet::default()
-                };
-                sheet.files.push(cuesheet_core::CueFile {
-                    path: audio,
-                    file_type: cuesheet_core::FileType::Mp3,
-                    tracks: chapters
-                        .chapters
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| cuesheet_core::Track {
-                            number: u8::try_from(i + 1).unwrap_or(99),
-                            mode: cuesheet_core::TrackMode::Audio,
-                            title: Some(c.title.clone()),
-                            performer: sheet.performer.clone(),
-                            songwriter: None,
-                            indices: vec![cuesheet_core::Index {
-                                number: 1,
-                                ms: c.start_ms,
-                            }],
-                            gaps: Vec::new(),
-                        })
-                        .collect(),
-                });
-                sheet
-                    .to_text()
-                    .map_err(|e| format!("{}: {e}", book.folder.display()))?
-            }
-        };
-        let sidecar = book.folder.join(format!("chapters.{extension}"));
+        let rendered = render_sidecar(book, format)?;
         if dry_run {
-            println!("would write {}", sidecar.display());
+            println!("would write {}", rendered.path.display());
         } else {
-            std::fs::write(&sidecar, text).map_err(|e| format!("{}: {e}", sidecar.display()))?;
-            println!("{}", sidecar.display());
+            std::fs::write(&rendered.path, &rendered.text)
+                .map_err(|e| format!("{}: {e}", rendered.path.display()))?;
+            println!("{}", rendered.path.display());
         }
         written += 1;
     }

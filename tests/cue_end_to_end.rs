@@ -162,32 +162,37 @@ fn an_exported_sheet_applies_back_to_the_chapters_it_was_exported_from() {
         .expect("ffmpeg runs");
     assert!(out.status.success());
 
-    // The book's chapters, as a player would see them.
+    // The book's chapters, as a player would see them, written in first: the workflow
+    // starts from a book that already has chapters, because that is whose chapters get
+    // exported.
     let original: Vec<(u64, &str)> = vec![(0, "Opening"), (90_000, "Middle"), (295_000, "The end")];
+    let written: Vec<FileChapter> = original
+        .iter()
+        .map(|(ms, title)| FileChapter {
+            start_ms: *ms,
+            end_ms: None,
+            title: (*title).to_string(),
+        })
+        .collect();
+    write_m4b_chapters(&m4b, &written).expect("the initial write succeeds");
 
-    // Export: chapters in, sheet text out.
-    let mut sheet = cuesheet_core::Sheet {
-        title: Some("Round trip".to_string()),
-        ..cuesheet_core::Sheet::default()
+    // Export through the library's own function — the code the `--export` verb runs —
+    // rather than a copy of it. A test of a copy is a green check over code nobody runs.
+    let book = audiobook_shelf::layout::Book {
+        folder: dir.clone(),
+        name: audiobook_shelf::naming::BookName {
+            title: "Round trip".to_string(),
+            ..audiobook_shelf::naming::BookName::default()
+        },
+        series: None,
+        files: vec![audiobook_shelf::layout::BookFile::from_path(&m4b, &dir)],
     };
-    sheet.files.push(cuesheet_core::CueFile {
-        path: "book.m4b".to_string(),
-        file_type: cuesheet_core::FileType::Mp3,
-        tracks: original
-            .iter()
-            .enumerate()
-            .map(|(i, (ms, title))| cuesheet_core::Track {
-                number: u8::try_from(i + 1).expect("under 99"),
-                mode: cuesheet_core::TrackMode::Audio,
-                title: Some((*title).to_string()),
-                performer: None,
-                songwriter: None,
-                indices: vec![cuesheet_core::Index { number: 1, ms: *ms }],
-                gaps: Vec::new(),
-            })
-            .collect(),
-    });
-    let text = sheet.to_text().expect("the sheet is writable");
+    let rendered =
+        audiobook_shelf::export::render_sidecar(&book, audiobook_shelf::export::SidecarFormat::Cue)
+            .expect("the book exports as a cue sheet");
+    let text = rendered.text;
+    assert_eq!(rendered.chapters, 3);
+    assert!(text.contains("FILE \"book.m4b\""), "{text}");
 
     // Apply: sheet text in, chapters written.
     let back = cuesheet_core::Sheet::parse(&text).expect("the exported sheet parses");
