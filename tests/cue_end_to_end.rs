@@ -124,3 +124,101 @@ fn a_cue_sheet_s_times_survive_into_an_m4b_that_ffprobe_reads_back() {
     assert!((starts[1] - 300.0).abs() < 0.01, "{starts:?}");
     assert!((starts[2] - 840.0).abs() < 0.01, "{starts:?}");
 }
+
+/// An exported sheet, applied back, must produce the chapters it was exported from.
+///
+/// This is the other half of the cue-sheet workflow: `--export cue` writes a sheet from a
+/// book's chapters, a human edits it, and `--write @` puts it back. The writer and the
+/// reader are the same crate, which is exactly why the check must go the long way round —
+/// through `Sheet::to_text`, back through `Sheet::parse`, into an M4B, and out of ffprobe.
+/// A crate agreeing with itself is the weakest evidence there is; ffprobe is not the crate.
+#[test]
+fn an_exported_sheet_applies_back_to_the_chapters_it_was_exported_from() {
+    if !has_ffmpeg() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join("audiobook-shelf-cue-export");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let m4b = dir.join("book.m4b");
+
+    let out = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=300:duration=600",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "32k",
+        ])
+        .arg(&m4b)
+        .output()
+        .expect("ffmpeg runs");
+    assert!(out.status.success());
+
+    // The book's chapters, as a player would see them.
+    let original: Vec<(u64, &str)> = vec![(0, "Opening"), (90_000, "Middle"), (295_000, "The end")];
+
+    // Export: chapters in, sheet text out.
+    let mut sheet = cuesheet_core::Sheet {
+        title: Some("Round trip".to_string()),
+        ..cuesheet_core::Sheet::default()
+    };
+    sheet.files.push(cuesheet_core::CueFile {
+        path: "book.m4b".to_string(),
+        file_type: cuesheet_core::FileType::Mp3,
+        tracks: original
+            .iter()
+            .enumerate()
+            .map(|(i, (ms, title))| cuesheet_core::Track {
+                number: u8::try_from(i + 1).expect("under 99"),
+                mode: cuesheet_core::TrackMode::Audio,
+                title: Some((*title).to_string()),
+                performer: None,
+                songwriter: None,
+                indices: vec![cuesheet_core::Index { number: 1, ms: *ms }],
+                gaps: Vec::new(),
+            })
+            .collect(),
+    });
+    let text = sheet.to_text().expect("the sheet is writable");
+
+    // Apply: sheet text in, chapters written.
+    let back = cuesheet_core::Sheet::parse(&text).expect("the exported sheet parses");
+    let chapters: Vec<FileChapter> = back.files[0]
+        .chapter_starts()
+        .into_iter()
+        .map(|(ms, title)| FileChapter {
+            start_ms: ms,
+            end_ms: None,
+            title: title.unwrap_or_default(),
+        })
+        .collect();
+    assert_eq!(chapters.len(), 3);
+    write_m4b_chapters(&m4b, &chapters).expect("the write succeeds");
+
+    let json = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_chapters", "-print_format", "json"])
+        .arg(&m4b)
+        .output()
+        .expect("ffprobe runs");
+    let text = String::from_utf8_lossy(&json.stdout).to_string();
+    let starts: Vec<f64> = text
+        .split("\"start_time\": \"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next()?.parse::<f64>().ok())
+        .collect();
+    assert_eq!(starts.len(), 3, "{text}");
+    for (seen, (ms, _)) in starts.iter().zip(original.iter()) {
+        assert!(
+            (seen - (*ms as f64) / 1_000.0).abs() < 0.014,
+            "{seen} s is not {ms} ms within one CD frame"
+        );
+    }
+}

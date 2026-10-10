@@ -385,6 +385,21 @@ All found by running the tool against a real library, which is how these show up
   *frames*, exactly as the format defines it. The pipeline was exact; the fixture was the
   trap.
 
+### Added
+
+- **`--export cue` completes the cue-sheet round trip.** A book's chapters can now leave
+  as a cue sheet — the format a rip already ships in — be edited by hand, and come back
+  with `--write @`. Verified the long way round in `tests/cue_end_to_end.rs`: chapters to
+  sheet text, back through the parser, into an M4B, out of ffprobe, where every chapter
+  start is the original within one CD frame. A crate agreeing with itself is the weakest
+  evidence there is; ffprobe is not the crate.
+
+- **A multi-file book refuses `--export cue` with the reason and the alternative.** A cue
+  sheet's times are relative to the one audio file its `FILE` line names, so a book of
+  several files has no honest cue-sheet form; writing one would be a file whose times are
+  wrong from the first line. The refusal names `ffmetadata`, whose times are book-relative
+  and which is what a multi-file book wants.
+
 ### Reported, not fixed here
 
 - `Discworld` is a book, not a disc: the disc check requires digits to follow the word, so

@@ -151,17 +151,12 @@ fn export(root: &std::path::Path, format: &str, dry_run: bool) -> Result<ExitCod
     use audiobook_core::sidecar::SidecarChapters;
     use audiobook_shelf::naming::ParseOptions;
 
-    let (extension, render) = match format {
-        "ffmetadata" => ("ffmeta.txt", 0u8),
-        "chapterx" => ("chap.txt", 1u8),
-        "timecode" => ("timecodes.txt", 2u8),
-        other => {
-            return Err(format!(
-                "unknown sidecar format `{other}`; expected ffmetadata, chapterx or \
-                 timecode"
-            ))
-        }
-    };
+    if format != "ffmetadata" && format != "chapterx" && format != "timecode" && format != "cue" {
+        return Err(format!(
+            "unknown sidecar format `{format}`; expected ffmetadata, chapterx, timecode \
+             or cue"
+        ));
+    }
 
     let books = audiobook_shelf::scan::scan(root, ParseOptions::default())
         .map_err(|_| format!("cannot read {}", root.display()))?;
@@ -188,10 +183,67 @@ fn export(root: &std::path::Path, format: &str, dry_run: bool) -> Result<ExitCod
             offset = offset.saturating_add(probe.duration_ms.unwrap_or(0));
         }
 
-        let text = match render {
-            0 => chapters.to_ffmetadata(),
-            1 => chapters.to_chapter_x(),
-            _ => chapters.to_timecode(),
+        let extension = match format {
+            "ffmetadata" => "ffmeta.txt",
+            "chapterx" => "chap.txt",
+            "timecode" => "timecodes.txt",
+            _ => "cue",
+        };
+        let text = match format {
+            "ffmetadata" => chapters.to_ffmetadata(),
+            "chapterx" => chapters.to_chapter_x(),
+            "timecode" => chapters.to_timecode(),
+            // A cue sheet names one audio file, and its times are relative to that file
+            // alone — so a book of several files has no honest cue-sheet form, and the
+            // refusal names the formats that do rather than writing a broken one.
+            _ => {
+                if book.files.len() > 1 {
+                    return Err(format!(
+                        "{}: a cue sheet's times are relative to one audio file and this \
+                         book has {} — export ffmetadata instead",
+                        book.folder.display(),
+                        book.files.len()
+                    ));
+                }
+                let audio = book
+                    .files
+                    .first()
+                    .map(|f| {
+                        f.path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                let mut sheet = cuesheet_core::Sheet {
+                    title: Some(book.name.title.clone()),
+                    ..cuesheet_core::Sheet::default()
+                };
+                sheet.files.push(cuesheet_core::CueFile {
+                    path: audio,
+                    file_type: cuesheet_core::FileType::Mp3,
+                    tracks: chapters
+                        .chapters
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| cuesheet_core::Track {
+                            number: u8::try_from(i + 1).unwrap_or(99),
+                            mode: cuesheet_core::TrackMode::Audio,
+                            title: Some(c.title.clone()),
+                            performer: sheet.performer.clone(),
+                            songwriter: None,
+                            indices: vec![cuesheet_core::Index {
+                                number: 1,
+                                ms: c.start_ms,
+                            }],
+                            gaps: Vec::new(),
+                        })
+                        .collect(),
+                });
+                sheet
+                    .to_text()
+                    .map_err(|e| format!("{}: {e}", book.folder.display()))?
+            }
         };
         let sidecar = book.folder.join(format!("chapters.{extension}"));
         if dry_run {
@@ -548,8 +600,9 @@ OPTIONS
                   a sidecar in any supported format. Chapter times are
                   book-relative and rebased onto each file.
     --export FMT  Write each book's chapters as a sidecar next to its audio:
-                  `ffmetadata`, `chapterx` or `timecode`. Round-trips with
-                  `--write @`.
+                  `ffmetadata`, `chapterx`, `timecode` or `cue`. Round-trips
+                  with `--write @`. A cue sheet names one audio file, so it
+                  is refused for a book of several.
     --dry-run     With --write, report what would change and touch nothing.
     --subtitles   Read a trailing ` - ` segment as a subtitle. Off by default,
                   because a dash inside a title is common and splitting on it
