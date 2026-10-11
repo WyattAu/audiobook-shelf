@@ -7,7 +7,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use audiobook_shelf::fs_reader::FileReader;
 use audiobook_shelf::naming::ParseOptions;
 use audiobook_shelf::scan::{self, Finding};
 
@@ -228,132 +227,12 @@ fn describe_track(track: &audiobook_shelf::layout::MissingTrack) -> String {
 #[allow(clippy::expect_used, clippy::panic)]
 fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<ExitCode, String> {
     use audiobook_shelf::naming::ParseOptions;
-    use audiobook_shelf::write::FileChapter;
+    use audiobook_shelf::spec::{plan_writes, resolve_spec};
 
-    // A spec beginning `@` names a sidecar file, in any of the four formats the estate
-    // reads, which is the real workflow: rip, export a chapter list, edit it, apply it.
-    // Everything else is inline `MM:SS Chapter` pairs separated by `;`.
-    let starts: Vec<(u64, String)> = if let Some(sidecar_path) = spec.strip_prefix('@') {
-        let text = std::fs::read_to_string(sidecar_path)
-            .map_err(|e| format!("cannot read {sidecar_path}: {e}"))?;
-        // A `.cue` is the chapter list a CD rip already ships with, and is tried first
-        // because its grammar is stricter than the sidecars': a file that parses as a cue
-        // sheet is one, and a sidecar parser reading cue lines would report a `TRACK`
-        // line as junk rather than as a track.
-        let cue_chapters = match cuesheet_core::Sheet::parse(&text) {
-            Ok(sheet) if !sheet.files.is_empty() => Some(sheet),
-            Ok(_) => None,
-            Err(cuesheet_core::CueError::UnknownCommand { .. }) => None,
-            Err(e) => return Err(format!("{sidecar_path}: {e}")),
-        };
-        if let Some(chapters) = cue_chapters.map(|sheet| {
-            // The sheet's times are relative to *its own file*, so a multi-file sheet
-            // needs each file's duration to become book-relative. Durations come from
-            // the audio itself, resolved next to the sheet, because that is where a rip
-            // puts it; a file that cannot be probed contributes a zero, which is wrong
-            // in a way the printed chapter times make visible rather than silent.
-            let base = std::path::Path::new(sidecar_path)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
-            let durations: Vec<Option<u64>> = sheet
-                .files
-                .iter()
-                .map(|f| {
-                    FileReader::open(&base.join(&f.path))
-                        .ok()
-                        .and_then(|mut r| {
-                            audiobook_core::MediaProbe::probe_source(&mut r).duration_ms
-                        })
-                })
-                .collect();
-            sheet
-                .chapter_starts_book_relative(&durations)
-                .into_iter()
-                .map(|(ms, title)| (ms, title.unwrap_or_default()))
-                .collect::<Vec<_>>()
-        }) {
-            if chapters.is_empty() {
-                return Err(format!(
-                    "{sidecar_path}: the cue sheet has no INDEX 01 lines"
-                ));
-            }
-            chapters
-        } else {
-            let parsed = audiobook_core::sidecar::parse(&text)
-                .map_err(|e| format!("{sidecar_path}: {e}"))?;
-            if parsed.chapters.is_empty() {
-                return Err(format!("{sidecar_path}: no chapters in it"));
-            }
-            if parsed.has_warnings() {
-                // The sidecar reader reports files a human edited and got nearly right. A
-                // silent pass here writes those files' defects into audio.
-                for warning in &parsed.warnings {
-                    eprintln!("warning: {warning:?}");
-                }
-            }
-            parsed
-                .chapters
-                .iter()
-                .map(|c| (c.start_ms, c.title.clone()))
-                .collect()
-        }
-    } else {
-        spec.split(';')
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let (stamp, title) = line
-                    .trim()
-                    .split_once(' ')
-                    .ok_or_else(|| format!("`{line}` is not `MM:SS Chapter`"))?;
-                let parts: Vec<u64> = stamp
-                    .split(':')
-                    .map(|p| {
-                        p.parse::<u64>()
-                            .map_err(|_| format!("`{stamp}` is not a time"))
-                    })
-                    .collect::<Result<_, _>>()?;
-                // The leading field is **seconds**, then minutes, then hours — the order
-                // audiobooks and ffmpeg's own `CHAPTERX` form both use, so `5:00` is five
-                // minutes and `1:02:03` is one hour two minutes three seconds.
-                //
-                // Reading the first field as minutes instead, which is the obvious mistake and
-                // the one this originally made, turns every time into sixty times itself:
-                // `5:00` becomes 300 seconds and a chapter list lands nowhere near where it
-                // was asked to go, with no error to say so.
-                let seconds = match parts.as_slice() {
-                    [s] => *s,
-                    [m, s] => m * 60 + s,
-                    [h, m, s] => h * 3600 + m * 60 + s,
-                    _ => return Err(format!("`{stamp}` has too many parts")),
-                };
-                Ok((seconds * 1000, String::from(title)))
-            })
-            .collect::<Result<Vec<_>, String>>()?
-    };
+    let starts = resolve_spec(spec, root)?;
     if starts.is_empty() {
         return Err("no chapters given".to_string());
     }
-
-    // The spec carries only start times, so each chapter ends where the next one begins.
-    // Leaving the end unset would write an end of zero, which is a chapter that ends
-    // before it starts and which a player renders as a zero-length entry.
-    let chapters: Vec<FileChapter> = starts
-        .iter()
-        .enumerate()
-        .map(|(i, (start_ms, title))| {
-            let end_ms = starts.get(i + 1).map_or(*start_ms, |(next, _)| *next);
-            if end_ms == *start_ms {
-                // The final chapter has nothing to end against. An end equal to the start is
-                // a zero-length chapter, which a player shows as an entry that cannot be
-                // skipped; an open-ended one runs to the end of the file, which is what
-                // "the rest of the book" means.
-                FileChapter::open_ended(title, *start_ms)
-            } else {
-                FileChapter::new(title, *start_ms, end_ms)
-            }
-        })
-        .collect();
 
     let books = audiobook_shelf::scan::scan(root, ParseOptions::default())
         .map_err(|_| format!("cannot read {}", root.display()))?;
@@ -363,48 +242,8 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
         if book.files.is_empty() {
             continue;
         }
-        // The book's total length, from each file's own duration, so a chapter can be told
-        // which file it falls in.
-        let mut offsets = Vec::with_capacity(book.files.len());
-        let mut running = 0u64;
-        for file in &book.files {
-            offsets.push(running);
-            running = running.saturating_add(duration_of(&file.path));
-        }
-        for (i, file) in book.files.iter().enumerate() {
-            let start_of_file = offsets.get(i).copied().unwrap_or(0);
-            let end_of_file = offsets
-                .get(i + 1)
-                .copied()
-                .unwrap_or(running)
-                .max(start_of_file);
-            // Only the chapters that fall inside this file, rebased onto it.
-            let mine: Vec<FileChapter> = chapters
-                .iter()
-                .filter(|c| {
-                    c.start_ms >= start_of_file && c.start_ms < end_of_file.max(start_of_file + 1)
-                })
-                .map(|c| {
-                    // Rebasing has to preserve "runs to the end of the file" rather than
-                    // collapse it to an end of zero, which is what `unwrap_or(0)` did: a
-                    // zero-length chapter is one a player cannot skip past, and ffmpeg
-                    // rejects outright.
-                    let rebased_start = c.start_ms.saturating_sub(start_of_file);
-                    match c.end_ms {
-                        Some(end) => FileChapter::new(
-                            &c.title,
-                            rebased_start,
-                            end.saturating_sub(start_of_file).max(rebased_start),
-                        ),
-                        None => FileChapter::open_ended(&c.title, rebased_start),
-                    }
-                })
-                .collect();
-            // A spec describes the *whole book*, so a file whose span holds none of its
-            // chapters has those chapters removed rather than skipped. Skipping would mix
-            // old and new lists in one book: the previous sidecar's last chapter sitting
-            // next to this one's first, which is a file that contradicts itself. The M4B
-            // writer already had these semantics; this makes the MP3 path match.
+        let durations = audiobook_shelf::spec::book_durations(book);
+        for (file, mine) in plan_writes(book, &durations, &starts) {
             if dry_run {
                 println!(
                     "would write {} chapter(s) to {}",
@@ -466,22 +305,13 @@ fn apply_writes(root: &std::path::Path, spec: &str, dry_run: bool) -> Result<Exi
     if !failures.is_empty() {
         println!("\n{} file(s) could not be written:", failures.len());
         for failure in &failures {
-            println!("  · {failure}");
+            println!("  \u{b7} {failure}");
         }
         // Exit non-zero so a scripted fix knows the library is not clean, while every
         // other file has still been written.
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// A file's duration in milliseconds, or zero when it cannot be read.
-fn duration_of(path: &std::path::Path) -> u64 {
-    std::fs::read(path).map_or(0, |bytes| {
-        audiobook_core::MediaProbe::probe(&bytes)
-            .duration_ms
-            .unwrap_or(0)
-    })
 }
 
 /// One finding, as a sentence a person can act on.

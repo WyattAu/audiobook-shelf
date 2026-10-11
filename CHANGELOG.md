@@ -139,6 +139,29 @@ All found by running the tool against a real library, which is how these show up
   several files has no honest cue-sheet form. The refusal names `ffmetadata`, whose times
   are book-relative and which is what a multi-file book wants.
 
+### Changed
+
+- **Spec resolution and chapter rebasing move into the library** (`audiobook_shelf::spec`),
+  for the same reason the exporter did: the rebasing arithmetic is where a chapter list
+  goes quietly wrong, and arithmetic in a binary is arithmetic only the command line
+  tests. `resolve_spec` parses a spec — inline pairs, a sidecar, or a cue sheet — and
+  `plan_writes` places each chapter in the file whose span holds its start, rebased. The
+  verb is a wrapper that prints.
+
+  The extraction caught a defect the hour it was written, which is the argument for it: a
+  first draft drained the chapter list into the first file, which would have cleared every
+  file after the first on a multi-file write. Caught by the boundary test, not by review.
+
+### Known limit
+
+- **A chapter that spans a file boundary keeps its book-relative end**, which can exceed
+  the duration of the file it is written into — `0:00 Part One` followed by `0:25 Part Two`
+  on files of twenty seconds writes a first chapter of 0→25 s into a 20 s file. Per-file
+  ID3 chapters cannot say "ends in the next file", ffprobe reads the number as written, and
+  in ordered playback the number is the true one; but a file played alone shows a chapter
+  longer than itself. Clamping to the file's duration would trade a visible oddity for an
+  invisible lie about where the chapter ends, so it is not done.
+
 ### Verified
 
 - **The library view is checked against ffprobe, file relationships included.** The
@@ -408,6 +431,29 @@ All found by running the tool against a real library, which is how these show up
   sheet's times are relative to the one audio file its `FILE` line names, so a book of
   several files has no honest cue-sheet form. The refusal names `ffmetadata`, whose times
   are book-relative and which is what a multi-file book wants.
+
+### Changed
+
+- **Spec resolution and chapter rebasing move into the library** (`audiobook_shelf::spec`),
+  for the same reason the exporter did: the rebasing arithmetic is where a chapter list
+  goes quietly wrong, and arithmetic in a binary is arithmetic only the command line
+  tests. `resolve_spec` parses a spec — inline pairs, a sidecar, or a cue sheet — and
+  `plan_writes` places each chapter in the file whose span holds its start, rebased. The
+  verb is a wrapper that prints.
+
+  The extraction caught a defect the hour it was written, which is the argument for it: a
+  first draft drained the chapter list into the first file, which would have cleared every
+  file after the first on a multi-file write. Caught by the boundary test, not by review.
+
+### Known limit
+
+- **A chapter that spans a file boundary keeps its book-relative end**, which can exceed
+  the duration of the file it is written into — `0:00 Part One` followed by `0:25 Part Two`
+  on files of twenty seconds writes a first chapter of 0→25 s into a 20 s file. Per-file
+  ID3 chapters cannot say "ends in the next file", ffprobe reads the number as written, and
+  in ordered playback the number is the true one; but a file played alone shows a chapter
+  longer than itself. Clamping to the file's duration would trade a visible oddity for an
+  invisible lie about where the chapter ends, so it is not done.
 
 ### Verified
 

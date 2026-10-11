@@ -15,6 +15,7 @@ pub mod layout;
 pub mod m4b;
 pub mod naming;
 pub mod scan;
+pub mod spec;
 pub mod write;
 
 pub use layout::{Book, BookFile};
