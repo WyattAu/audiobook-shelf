@@ -1,3 +1,14 @@
+# This app's dependencies are path links into the estate (../audiobook-core and
+# friends), so the shared rust-kit workflow — which checks out one repository —
+# cannot resolve them. This workflow checks out the siblings beside it first, which
+# is what bootstrap.sh does for a human, and then runs the same gate.
+#
+# Two sibling refs track *unmerged* branches, because the versions this app needs
+# (audiobook-core 0.5, id3-core 0.3) are on those branches and their mains hold
+# 0.3.0 and 0.1.0. When the branches merge, these refs move to main — and until
+# they do, a cold clone of the estate cannot build this app, which the registry
+# records.
+
 name: CI
 
 on:
@@ -13,10 +24,70 @@ concurrency:
 
 jobs:
   quality:
-    uses: WyattAu/engineering-standards/.github/workflows/rust-kit.yml@main
-    with:
-      tier: a
-      all-features: true
-      # std-only: the ffmpeg-gated tests run on ubuntu runners, which ship
-      # ffmpeg, so the oracle checks execute in CI rather than skipping.
-      embedded: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: checkout engineering-standards (gate scripts)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: WyattAu/engineering-standards
+          ref: main
+          path: .standards
+          persist-credentials: false
+
+      - name: checkout the estate siblings this app's path dependencies name
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: WyattAu/mp4-core
+          ref: main
+          path: mp4-core
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: WyattAu/cuesheet-core
+          ref: main
+          path: cuesheet-core
+          persist-credentials: false
+      # The two unmerged branches: move both refs to main when they merge.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: WyattAu/audiobook-core
+          ref: fix/id3-v23-tags
+          path: audiobook-core
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: WyattAu/id3-core
+          ref: fix/id3-chapters
+          path: id3-core
+          persist-credentials: false
+
+      - name: install the toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused \
+            --location --silent --show-error --fail https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: ffmpeg, which the oracle tests need in order to run at all
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update --quiet && sudo apt-get install --yes --quiet ffmpeg
+          fi
+          ffmpeg -version | head -1
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --all-features
+
+      - name: feature gates
+        run: |
+          python3 .standards/scripts/check-features.py --cwd .
+          python3 .standards/scripts/check-layers.py --cwd .
