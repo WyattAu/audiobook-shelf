@@ -8,6 +8,15 @@
 # 0.3.0 and 0.1.0. When the branches merge, these refs move to main — and until
 # they do, a cold clone of the estate cannot build this app, which the registry
 # records.
+#
+# The sibling checkouts read ESTATE_TOKEN when it exists, because four of the
+# siblings are private and this repository's own token cannot see them: CI fails
+# with "repository not found" at the first private sibling. Creating the secret
+# (a fine-grained or classic PAT with read access to the estate) turns this
+# green with no further change here. The other fix is visibility: a public app
+# whose dependencies are private repos is one nobody else can build, and
+# private repos also consume paid Actions minutes, which is why the estate's
+# older CI was failing to start at all.
 
 name: CI
 
@@ -44,12 +53,14 @@ jobs:
           ref: main
           path: mp4-core
           persist-credentials: false
+          token: ${{ secrets.ESTATE_TOKEN || github.token }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: WyattAu/cuesheet-core
           ref: main
           path: cuesheet-core
           persist-credentials: false
+          token: ${{ secrets.ESTATE_TOKEN || github.token }}
       # The two unmerged branches: move both refs to main when they merge.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -57,12 +68,14 @@ jobs:
           ref: fix/id3-v23-tags
           path: audiobook-core
           persist-credentials: false
+          token: ${{ secrets.ESTATE_TOKEN || github.token }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: WyattAu/id3-core
           ref: fix/id3-chapters
           path: id3-core
           persist-credentials: false
+          token: ${{ secrets.ESTATE_TOKEN || github.token }}
 
       - name: install the toolchain
         run: |
