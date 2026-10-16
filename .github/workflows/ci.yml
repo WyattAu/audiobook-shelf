@@ -92,6 +92,13 @@ jobs:
           fi
           ffmpeg -version | head -1
 
+      - name: DEBUG workspace layout
+        run: |
+          pwd
+          ls -la "$GITHUB_WORKSPACE"
+          ls -la "$GITHUB_WORKSPACE/audiobook-core" || true
+          head -5 "$GITHUB_WORKSPACE/audiobook-core/Cargo.toml" || true
+
       - name: fmt
         run: cargo fmt --check
 
