@@ -61,18 +61,19 @@ jobs:
           path: cuesheet-core
           persist-credentials: false
           token: ${{ secrets.ESTATE_TOKEN || github.token }}
-      # The two unmerged branches: move both refs to main when they merge.
+      # The dependency branches (id3 chapter fixes) merged to main; both refs
+# track main now.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: WyattAu/audiobook-core
-          ref: fix/id3-v23-tags
+          ref: main
           path: audiobook-core
           persist-credentials: false
           token: ${{ secrets.ESTATE_TOKEN || github.token }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: WyattAu/id3-core
-          ref: fix/id3-chapters
+          ref: main
           path: id3-core
           persist-credentials: false
           token: ${{ secrets.ESTATE_TOKEN || github.token }}
