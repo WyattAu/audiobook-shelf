@@ -92,12 +92,16 @@ jobs:
           fi
           ffmpeg -version | head -1
 
-      - name: DEBUG workspace layout
+      - name: place the siblings where the path dependencies resolve
         run: |
-          pwd
-          ls -la "$GITHUB_WORKSPACE"
-          ls -la "$GITHUB_WORKSPACE/audiobook-core" || true
-          head -5 "$GITHUB_WORKSPACE/audiobook-core/Cargo.toml" || true
+          # The shelf checks out at the workspace root; the manifest's path
+          # dependencies (../audiobook-core and friends) resolve one level
+          # ABOVE it, where actions/checkout cannot write. Symlink each
+          # sibling into place — bootstrap.sh's shape for a human clone.
+          for sibling in mp4-core id3-core audiobook-core cuesheet-core; do
+            ln -s "$GITHUB_WORKSPACE/$sibling" "$(dirname "$GITHUB_WORKSPACE")/$sibling"
+          done
+          ls -la "$(dirname "$GITHUB_WORKSPACE")"
 
       - name: fmt
         run: cargo fmt --check
