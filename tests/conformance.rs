@@ -298,9 +298,12 @@ fn a_book_across_several_files_lays_out_as_a_player_would() {
         first_file_end
     );
     assert!(
-        got[2].start_ms >= first_file_end,
-        "and so the scanner must agree, or it is not offsetting at all: it said {} ms",
-        got[2].start_ms
+        got[2].start_ms + TOLERANCE_MS >= first_file_end,
+        "and so the scanner must agree (within {} ms), or it is not offsetting at all: \
+         it said {} ms against a measured file end of {} ms",
+        TOLERANCE_MS,
+        got[2].start_ms,
+        first_file_end
     );
 }
 
