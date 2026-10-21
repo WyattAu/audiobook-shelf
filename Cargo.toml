@@ -24,10 +24,9 @@ publish = false
 #
 # into one directory. `scripts/bootstrap.sh` in engineering-standards does this.
 #
-# The versions below track the dependency branches: `id3-core` 0.2 is the CTOC-flag and
-# ID3v2.3 fixes, and `audiobook-core` 0.5 is the v2.3 behaviour change it causes. Both live
-# on `fix/id3-chapters` and `fix/id3-v23-tags` rather than `main` until those are merged,
-# so a clone against `main` will not satisfy them.
+# The version requirements match the crates.io releases (id3-core 0.3,
+# audiobook-core 0.5, mp4-core 0.3.1) with local path overrides for estate
+# development; all three are published.
 audiobook-core = { version = "0.5", path = "../audiobook-core" }
 cuesheet-core = { version = "0.1", path = "../cuesheet-core" }
 id3-core = { version = "0.3", path = "../id3-core" }
