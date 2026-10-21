@@ -1,2 +1,8 @@
 
 # cargo-vet imports lock
+
+[audits.bytecodealliance.audits]
+
+[audits.mozilla.audits]
+
+[audits.zcash.audits]
